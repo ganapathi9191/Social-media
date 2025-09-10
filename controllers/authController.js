@@ -852,6 +852,7 @@ exports.createPost = async (req, res) => {
         mentions.push(mentionedUser._id);
       }
     }
+    
 
     const newPost = {
       userId,
