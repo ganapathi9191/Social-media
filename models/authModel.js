@@ -12,13 +12,25 @@ const postSchema = new mongoose.Schema({
     }
   ],
   likes: [{ type: mongoose.Schema.Types.ObjectId, ref: "Auth" }],
-  comments: [
-    {
-      userId: { type: mongoose.Schema.Types.ObjectId, ref: "Auth" },
-      text: { type: String, required: true },
-      createdAt: { type: Date, default: Date.now },
+   comments: [{
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Auth',
+      required: true
     },
-  ],
+    text: {
+      type: String,
+      required: true
+    },
+    createdAt: {
+      type: Date,
+      default: Date.now
+    },
+    mentions: [{
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Auth'
+    }]
+  }],
   mentions: [{ type: mongoose.Schema.Types.ObjectId, ref: "Auth" }],
   createdAt: { type: Date, default: Date.now },
 });

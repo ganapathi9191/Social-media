@@ -233,6 +233,53 @@ exports.getUserById = async (req, res) => {
   }
 };
 
+
+
+
+// ------------------ STATISTICS CONTROLLER ------------------
+exports.getUserStatistics = async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ success: false, message: "Invalid userId" });
+    }
+
+    const user = await Auth.findById(userId)
+      .populate("followers", "_id")
+      .populate("following", "_id")
+      .populate("posts", "_id likes comments"); // assuming posts collection is referenced
+
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    const stats = {
+      posts: user.posts?.length || 0,
+      followers: user.followers?.length || 0,
+      following: user.following?.length || 0,
+      likesReceived: user.posts?.reduce((acc, post) => acc + (post.likes?.length || 0), 0) || 0,
+      commentsReceived: user.posts?.reduce((acc, post) => acc + (post.comments?.length || 0), 0) || 0,
+    };
+
+    res.status(200).json({
+      success: true,
+      message: "User statistics fetched successfully ✅",
+      data: stats,
+    });
+
+  } catch (error) {
+    res.status(500).json({ success: false, message: "Server error", error: error.message });
+  }
+};
+
+
+
+
+
+
+
+
 // Update user by ID
 exports.updateUserById = async (req, res) => {
   try {
@@ -595,94 +642,6 @@ exports.fetchUserProfile = async (req, res) => {
 };
 
 
-
-// ------------------ ADMIN CONTROLLERS ------------------
-
-// Get all users (admin only)
-exports.adminGetAllUsers = async (req, res) => {
-  try {
-    const { page = 1, limit = 10, search = '' } = req.query;
-    
-    const query = search ? {
-      $or: [
-        { fullName: { $regex: search, $options: 'i' } },
-        { email: { $regex: search, $options: 'i' } },
-        { mobile: { $regex: search, $options: 'i' } },
-        { "profile.username": { $regex: search, $options: 'i' } }
-      ]
-    } : {};
-
-    const users = await Auth.find(query)
-      .select("fullName email mobile profile accountStatus createdAt updatedAt")
-      .limit(limit * 1)
-      .skip((page - 1) * limit)
-      .sort({ createdAt: -1 });
-
-    const total = await Auth.countDocuments(query);
-
-    res.status(200).json({
-      success: true,
-      totalUsers: total,
-      totalPages: Math.ceil(total / limit),
-      currentPage: page,
-      message: "Users fetched successfully ✅",
-      data: users,
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, message: "Server error", error: error.message });
-  }
-};
-
-// Get user statistics (admin only)
-exports.getUserStatistics = async (req, res) => {
-  try {
-    const totalUsers = await Auth.countDocuments();
-    const activeUsers = await Auth.countDocuments({ "accountStatus.isActive": true });
-    const usersWithProfile = await Auth.countDocuments({ profile: { $exists: true, $ne: null } });
-    const usersWithPosts = await Auth.countDocuments({ "posts.0": { $exists: true } });
-
-    res.status(200).json({
-      success: true,
-      message: "User statistics fetched successfully ✅",
-      data: {
-        totalUsers,
-        activeUsers,
-        usersWithProfile,
-        usersWithPosts
-      }
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, message: "Server error", error: error.message });
-  }
-};
-
-// Update user status (admin only)
-exports.adminUpdateUserStatus = async (req, res) => {
-  try {
-    const { userId } = req.params;
-    const { isActive } = req.body;
-
-    if (!mongoose.Types.ObjectId.isValid(userId))
-      return res.status(400).json({ success: false, message: "Invalid userId" });
-
-    const user = await Auth.findByIdAndUpdate(
-      userId,
-      { "accountStatus.isActive": isActive },
-      { new: true }
-    ).select("fullName email mobile accountStatus");
-
-    if (!user) return res.status(404).json({ success: false, message: "User not found" });
-
-    res.status(200).json({
-      success: true,
-      message: `User ${isActive ? 'activated' : 'deactivated'} successfully ✅`,
-      data: user,
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, message: "Server error", error: error.message });
-  }
-};
-
 // ------------------ UTILITY CONTROLLERS ------------------
 
 // Check username availability
@@ -755,3 +714,6 @@ exports.getUserDashboard = async (req, res) => {
     res.status(500).json({ success: false, message: "Server error", error: error.message });
   }
 };
+
+
+

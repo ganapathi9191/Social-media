@@ -4,7 +4,7 @@ const authController = require('../controllers/authController');
 const upload = require('../utils/upload');
 const campaign =require("../controllers/campaignController");
 const notification =require("../controllers/notificationControllers");
-const folloController =require("../controllers/followController");
+const followController =require("../controllers/followController");
 const postController =require('../controllers/postController');
 
 
@@ -27,6 +27,11 @@ router.get('/users', authController.getAllUsers);
 
 // Get user by ID
 router.get('/users/:userId', authController.getUserById);
+
+
+// GET user statistics
+router.get("/user/:userId/statistics", authController.getUserStatistics);
+
 
 // Update user by ID
 router.put('/users/:userId', authController.updateUserById);
@@ -78,37 +83,39 @@ router.post('/privacy', authController.updateProfilePrivacy);
 // Fetch user profile considering visibility
 router.get('/profile-visibility/:userId/:viewerId', authController.fetchUserProfile);
 
+
+
 // ------------------ FOLLOW/FOLLOWER ROUTES ------------------
 
 // Follow user
-router.post('/follow', folloController.followUser);
+router.post('/profile/follow', followController.followUser);
 
 // Approve follower
-router.post('/approve-follower', folloController.approveFollower);
+router.post('/profile/approve-follower', followController.approveFollower);
 
 // Reject follower
-router.post('/reject-follower', folloController.rejectFollower);
+router.post('/profile/reject-follower', followController.rejectFollower);
 
 // Block follower
-router.post('/block-follower', folloController.blockFollower);
+router.post('/profile/block-follower', followController.blockFollower);
 
 // Get followers
-router.get('/followers/:userId', folloController.getFollowers);
+router.get('/profile/followers/:userId', followController.getFollowers);
 
 // Get following
-router.get('/following/:userId', folloController.getFollowing);
+router.get('/profile/following/:userId', followController.getFollowing);
 
 // Update followers (approve/reject multiple)
-router.put('/followers', folloController.updateFollowers);
+router.put('/profile/followers', followController.updateFollowers);
 
 // Delete follower
-router.delete('/follower', folloController.deleteFollower);
+router.delete('/profile/follower', followController.deleteFollower);
 
 // Delete following
-router.delete('/following', folloController.deleteFollowing);
+router.delete('/profile/following', followController.deleteFollowing);
 
 // Toggle follow/unfollow
-router.post('/toggle-follow', folloController.toggleFollow);
+router.post('/profile/toggle-follow', followController.toggleFollow);
 
 // ------------------ POST ROUTES ------------------
 
@@ -173,33 +180,22 @@ router.get('/notifications/unread-count/:userId', notification.getUnreadCount);
 // ------------------ MENTION ROUTES ------------------
 
 // Get posts where user mentioned others
-router.get('/mentions/posts-by-user/:userId', folloController.getPostsWithUserMentions);
+router.get('/mentions/posts-by-user/:userId', followController.getPostsWithUserMentions);
 
 // Get posts where user is mentioned
-router.get('/mentions/posts/:userId', folloController.getPostMentions);
+router.get('/mentions/posts/:userId', followController.getPostMentions);
 
 // Get comments where user is mentioned
-router.get('/mentions/comments/:userId', folloController.getCommentMentions);
+router.get('/mentions/comments/:userId', followController.getCommentMentions);
 
 // Get all mentions for a user (both posts and comments)
-router.get('/mentions/all/:userId', folloController.getAllMentions);
+router.get('/mentions/all/:userId', followController.getAllMentions);
 
 // Remove mention from post
-router.delete('/mentions/post', folloController.removePostMention);
+router.delete('/mentions/post', followController.removePostMention);
 
 // Remove mention from comment
-router.delete('/mentions/comment', folloController.removeCommentMention);
-
-// ------------------ ADMIN ROUTES ------------------
-
-// Get all users (admin only) with pagination and search
-router.get('/admin/users', authController.adminGetAllUsers);
-
-// Get user statistics (admin only)
-router.get('/admin/statistics', authController.getUserStatistics);
-
-// Update user status (admin only)
-router.put('/admin/users/:userId/status', authController.adminUpdateUserStatus);
+router.delete('/mentions/comment', followController.removeCommentMention);
 
 // ------------------ UTILITY ROUTES ------------------
 
@@ -211,7 +207,7 @@ router.get('/dashboard/:userId', authController.getUserDashboard);
 
 
 // Create Campaign (with multiple images)
-router.post("/campaign",upload.array("images"),campaign.createCampaign);
+router.post("/campaign",upload.array("media"),campaign.createCampaign);
 
 // Get all campaigns
 router.get("/campaigns", campaign.getCampaigns);
@@ -220,7 +216,7 @@ router.get("/campaigns", campaign.getCampaigns);
 router.get("/campaign/:id", campaign.getCampaignById);
 
 // Update campaign by ID (with new images if uploaded)
-router.put("/campaign/:id",upload.array("images"),campaign.updateCampaign);
+router.put("/campaign/:id",upload.array("media"),campaign.updateCampaign);
 
 // Delete campaign by ID
 router.delete("/campaign/:id", campaign.deleteCampaign);

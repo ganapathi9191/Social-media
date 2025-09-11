@@ -1,200 +1,78 @@
 const mongoose = require("mongoose");
 const { Auth, Notification } = require('../models/authModel');
 
-// Send notification to followers when a new post is created
-exports.sendPostNotification = async (userId, postId, postDescription) => {
+
+
+// Get comments where user is mentioned
+exports.getMentionedComments = async (req, res) => {
   try {
-    const user = await Auth.findById(userId);
-    if (!user) return;
+    const { userId } = req.params;
+    
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ success: false, message: "Invalid user ID" });
+    }
 
-    // Get all followers
-    const followers = user.followers;
-
-    if (followers.length === 0) return;
-
-    const message = `${user.fullName} created a new post: "${postDescription.substring(0, 50)}${postDescription.length > 50 ? '...' : ''}"`;
-
-    // Create notifications for all followers who have post notifications enabled
-    const notifications = [];
-    for (const followerId of followers) {
-      const follower = await Auth.findById(followerId);
-      if (follower && follower.notificationPreferences.posts) {
-        notifications.push({
-          recipient: followerId,
-          sender: userId,
-          type: "post",
-          post: postId,
-          message: message,
-          isRead: false
-        });
+    // Find all posts that have comments mentioning this user
+    const mentionedComments = await Auth.aggregate([
+      { $unwind: "$posts" },
+      { $unwind: "$posts.comments" },
+      {
+        $match: {
+          "posts.comments.mentions": mongoose.Types.ObjectId(userId)
+        }
+      },
+      {
+        $lookup: {
+          from: "auths", // Adjust collection name as needed
+          localField: "posts.comments.userId",
+          foreignField: "_id",
+          as: "commentUser"
+        }
+      },
+      {
+        $lookup: {
+          from: "auths",
+          localField: "posts.comments.mentions",
+          foreignField: "_id",
+          as: "mentionedUsers"
+        }
+      },
+      {
+        $project: {
+          postId: "$posts._id",
+          postContent: "$posts.content",
+          comment: "$posts.comments",
+          postOwner: {
+            _id: "$_id",
+            username: "$profile.username",
+            fullName: "$fullName"
+          },
+          commentUser: { 
+            $arrayElemAt: ["$commentUser", 0] 
+          },
+          mentionedUsers: 1
+        }
       }
-    }
+    ]);
 
-    if (notifications.length > 0) {
-      await Notification.insertMany(notifications);
-    }
-
-  } catch (error) {
-    console.error("Error sending post notifications:", error);
-  }
-};
-
-// Send follow request notification
-exports.sendFollowRequestNotification = async (followerId, targetId) => {
-  try {
-    const follower = await Auth.findById(followerId);
-    const target = await Auth.findById(targetId);
-
-    if (!follower || !target) return;
-    
-    // Check if target has follow request notifications enabled
-    if (!target.notificationPreferences.followRequests) return;
-
-    const notification = new Notification({
-      recipient: targetId,
-      sender: followerId,
-      type: "follow_request",
-      message: `${follower.fullName} sent you a follow request`,
-      isRead: false
+    res.status(200).json({
+      success: true,
+      message: "Mentioned comments fetched successfully",
+      data: mentionedComments
     });
 
-    await notification.save();
   } catch (error) {
-    console.error("Error sending follow request notification:", error);
+    console.error(error);
+    res.status(500).json({ success: false, message: "Server error", error: error.message });
   }
 };
 
-// Send follow notification
-exports.sendFollowNotification = async (followerId, targetId) => {
-  try {
-    const follower = await Auth.findById(followerId);
-    const target = await Auth.findById(targetId);
 
-    if (!follower || !target) return;
-    
-    // Check if target has follow notifications enabled
-    if (!target.notificationPreferences.follows) return;
 
-    const notification = new Notification({
-      recipient: targetId,
-      sender: followerId,
-      type: "follow",
-      message: `${follower.fullName} started following you`,
-      isRead: false
-    });
 
-    await notification.save();
-  } catch (error) {
-    console.error("Error sending follow notification:", error);
-  }
-};
 
-// Send follow approval notification
-exports.sendFollowApprovalNotification = async (userId, followerId) => {
-  try {
-    const user = await Auth.findById(userId);
-    const follower = await Auth.findById(followerId);
 
-    if (!user || !follower) return;
-    
-    // Check if follower has follow approval notifications enabled
-    if (!follower.notificationPreferences.followApprovals) return;
 
-    const notification = new Notification({
-      recipient: followerId,
-      sender: userId,
-      type: "follow_approval",
-      message: `${user.fullName} approved your follow request`,
-      isRead: false
-    });
-
-    await notification.save();
-  } catch (error) {
-    console.error("Error sending follow approval notification:", error);
-  }
-};
-
-// Send like notification
-exports.sendLikeNotification = async (userId, postOwnerId, postId) => {
-  try {
-    const user = await Auth.findById(userId);
-    const postOwner = await Auth.findById(postOwnerId);
-
-    if (!user || !postOwner || userId.toString() === postOwnerId.toString()) return;
-    
-    // Check if post owner has like notifications enabled
-    if (!postOwner.notificationPreferences.likes) return;
-
-    const notification = new Notification({
-      recipient: postOwnerId,
-      sender: userId,
-      type: "like",
-      post: postId,
-      message: `${user.fullName} liked your post`,
-      isRead: false
-    });
-
-    await notification.save();
-  } catch (error) {
-    console.error("Error sending like notification:", error);
-  }
-};
-
-// Send comment notification
-exports.sendCommentNotification = async (userId, postOwnerId, postId, commentText) => {
-  try {
-    const user = await Auth.findById(userId);
-    const postOwner = await Auth.findById(postOwnerId);
-
-    if (!user || !postOwner || userId.toString() === postOwnerId.toString()) return;
-    
-    // Check if post owner has comment notifications enabled
-    if (!postOwner.notificationPreferences.comments) return;
-
-    const message = `${user.fullName} commented on your post: "${commentText.substring(0, 30)}${commentText.length > 30 ? '...' : ''}"`;
-
-    const notification = new Notification({
-      recipient: postOwnerId,
-      sender: userId,
-      type: "comment",
-      post: postId,
-      message: message,
-      isRead: false
-    });
-
-    await notification.save();
-  } catch (error) {
-    console.error("Error sending comment notification:", error);
-  }
-};
-
-// Send mention notification
-exports.sendMentionNotification = async (senderId, recipientId, postId, messageText) => {
-  try {
-    const sender = await Auth.findById(senderId);
-    const recipient = await Auth.findById(recipientId);
-
-    if (!sender || !recipient || senderId.toString() === recipientId.toString()) return;
-    
-    // Check if recipient has mention notifications enabled
-    if (!recipient.notificationPreferences.mentions) return;
-
-    const message = `${sender.fullName} mentioned you: "${messageText.substring(0, 30)}${messageText.length > 30 ? '...' : ''}"`;
-
-    const notification = new Notification({
-      recipient: recipientId,
-      sender: senderId,
-      type: "mention",
-      post: postId,
-      message: message,
-      isRead: false
-    });
-
-    await notification.save();
-  } catch (error) {
-    console.error("Error sending mention notification:", error);
-  }
-};
 
 // Get all notifications for a user
 exports.getUserNotifications = async (req, res) => {

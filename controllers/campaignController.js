@@ -6,41 +6,43 @@ exports.createCampaign = async (req, res) => {
   try {
     const { fullName, email, mobileNumber, faqs } = req.body;
 
-    // Upload multiple images to Cloudinary
-    let uploadedImages = [];
+    // Upload media files to Cloudinary
+    let uploadedMedia = [];
     if (req.files && req.files.length > 0) {
       for (const file of req.files) {
-        const imageUrl = await uploadImage(file.buffer, "campaignImages", file.originalname);
-        uploadedImages.push(imageUrl);
+        const url = await uploadImage(file.buffer, "campaignMedia", file.originalname);
+
+        let type = "image";
+        if (file.mimetype.startsWith("video")) type = "video";
+        else if (file.mimetype === "application/pdf") type = "pdf";
+
+        uploadedMedia.push({ url, type });
       }
     }
 
-    // Parse faqs (string → JSON)
+    // Parse FAQs (string → JSON)
     let parsedFaqs = [];
-    if (faqs) {
-      parsedFaqs = JSON.parse(faqs);
-    }
+    if (faqs) parsedFaqs = JSON.parse(faqs);
 
     const campaign = new Campaign({
       fullName,
       email,
       mobileNumber,
-      images: uploadedImages,
-      faqs: parsedFaqs,
+      media: uploadedMedia,
+      faqs: parsedFaqs
     });
 
     await campaign.save();
 
     res.status(201).json({
       success: true,
-      message: "Campaign created successfully",
-      data: campaign,
+      message: "Form submitted successfully",
+      data: campaign
     });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
 };
-
 // Get All Campaigns
 exports.getCampaigns = async (req, res) => {
   try {
@@ -53,16 +55,15 @@ exports.getCampaigns = async (req, res) => {
 
 // Get Single Campaign by ID
 exports.getCampaignById = async (req, res) => {
-  try {
+   try {
     const campaign = await Campaign.findById(req.params.id);
-    if (!campaign) return res.status(404).json({ success: false, message: "Campaign not found" });
+    if (!campaign) return res.status(404).json({ success: false, message: "Form not found" });
 
     res.status(200).json({ success: true, data: campaign });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
 };
-
 
 
 // Update Campaign
