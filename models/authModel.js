@@ -54,6 +54,7 @@ const authSchema = new mongoose.Schema({
   fullName: { type: String, required: true },
   mobile: { type: String, unique: true },
   email: { type: String, unique: true },
+  gender:{type:String,unique:true},
   otpVerified: { type: Boolean, default: false },
   accountStatus: {
     isActive: { type: Boolean, default: true },
