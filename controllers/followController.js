@@ -49,11 +49,11 @@ exports.followUser = async (req, res) => {
 
 // Approve follower
 exports.approveFollower = async (req, res) => {
-  try {
+    try {
     const { userId, followerId } = req.body;
 
     if (!mongoose.Types.ObjectId.isValid(userId) || !mongoose.Types.ObjectId.isValid(followerId)) {
-      return res.status(400).json({ success: false, message: "Invalid userId or followerId" });
+      return res.status(400).json({ success: false, message: "Invalid IDs" });
     }
 
     const user = await Auth.findById(userId);
@@ -63,35 +63,29 @@ exports.approveFollower = async (req, res) => {
       return res.status(404).json({ success: false, message: "User not found" });
     }
 
-    user.followerRequests = user.followerRequests.filter(id => id.toString() !== followerId);
-
-    if (!user.followers.map(id => id.toString()).includes(followerId)) {
+    // ✅ Ensure follower exists in user.followers (auto-add if missing)
+    if (!user.followers.includes(followerId)) {
       user.followers.push(followerId);
     }
 
-    if (!follower.following.map(id => id.toString()).includes(userId)) {
+    // ✅ Make following mutual
+    if (!user.following.includes(followerId)) {
+      user.following.push(followerId);
+    }
+    if (!follower.following.includes(userId)) {
       follower.following.push(userId);
     }
 
     await user.save();
     await follower.save();
 
-    const updatedUser = await Auth.findById(userId)
-      .populate("followers", "fullName profile.username profile.image");
-
-    // Send follow approval notification if enabled
-    if (follower.notificationPreferences.followApprovals) {
-      sendFollowApprovalNotification(userId, followerId);
-    }
-
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
-      message: "Follower approved ✅",
-      data: updatedUser.followers
+      message: "Follower approved successfully. You can now chat if both follow each other.",
     });
-
   } catch (error) {
-    res.status(500).json({ success: false, message: "Server error", error: error.message });
+    console.error("Error approving follower:", error);
+    return res.status(500).json({ success: false, message: "Server error" });
   }
 };
 
