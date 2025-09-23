@@ -1,22 +1,38 @@
 const express = require("express");
 const router = express.Router();
 const multer = require("multer");
-const upload = multer(); // memory storage
-const controller = require("../controllers/videoMeetController");
+const upload = multer(); // In-memory storage
 
-// Meeting CRUD
-router.post("/video-meet/create", controller.createVideoMeet);
-router.get("/video-meet/:meetLink", controller.getMeetByLink);
-router.put("/video-meet/:meetLink", controller.updateMeet);
-router.post("/video-meet/:meetLink/end", controller.endMeeting);
+const videoMeetController = require("../controllers/videoMeetController");
 
-// Participants
-router.post("/video-meet/:meetLink/participant", controller.addParticipant);
-router.delete("/video-meet/:meetLink/participant", controller.removeParticipant);
-router.post("/video-meet/:meetLink/participant/pin", controller.pinParticipant);
+// CRUD routes
+router.post("/video-meet/create", videoMeetController.createVideoMeet);
+router.get("/video-meets/all", videoMeetController.getAllVideoMeets);
+router.get("/video-meet/:meetid", videoMeetController.getVideoMeetById);
+router.put("/video-meet/:meetid", videoMeetController.updateVideoMeetById);
+router.delete("/video-meet/:meetid", videoMeetController.deleteVideoMeetById);
 
-// Chat
-router.post("/video-meet/:meetLink/chat", upload.array("media"), controller.addChatMessage);
-router.delete("/video-meet/:meetLink/chat/:chatId", controller.deleteChatMessage);
+// Chat & media routes
+router.post("/upload/:meetId", upload.single("file"), videoMeetController.uploadMedia);
+router.post("/chat/:meetId", videoMeetController.addChatMessage);
+router.post("/:meetId/chat", videoMeetController.addChatMessage);          
+router.get("/:meetId/chat", videoMeetController.getAllMessagesByMeetId);   
+router.put("/:meetId/chat/:messageId", videoMeetController.updateChatMessage); 
+router.delete("/:meetId/chat/:messageId", videoMeetController.deleteChatMessage); 
+
+
+
+
+// Screen share toggle
+router.patch("/screenshare/:meetId", videoMeetController.toggleScreenShare);
+
+// Invite participants
+router.post("/invite/:meetId", videoMeetController.inviteParticipants);
+
+// Watch together
+router.post("/watch/:meetId", upload.single("file"), videoMeetController.addSharedMedia);
+router.patch("/watch/:meetId/:mediaId", videoMeetController.updatePlaybackPosition);
+
+
 
 module.exports = router;

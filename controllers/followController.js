@@ -2,60 +2,10 @@ const mongoose = require("mongoose");
 const { Auth } = require('../models/authModel');
 const { sendFollowNotification, sendFollowRequestNotification, sendFollowApprovalNotification } = require('./notificationControllers');
 
-// Follow user
-exports.followUser = async (req, res) => {
+// Send Follow Request
+exports.sendFollowRequest = async (req, res) => {
   try {
-    const { userId, targetId } = req.body;
-
-    if (!mongoose.Types.ObjectId.isValid(userId) || !mongoose.Types.ObjectId.isValid(targetId))
-      return res.status(400).json({ success: false, message: "Invalid userId or targetId" });
-
-    const user = await Auth.findById(userId);
-    const target = await Auth.findById(targetId);
-    if (!user || !target) return res.status(404).json({ success: false, message: "User not found" });
-
-    if (target.blockedFollowers.includes(userId))
-      return res.status(403).json({ success: false, message: "You are blocked by this user" });
-
-    if (target.privacy.profileVisibility === "public") {
-      if (!target.followers.includes(userId)) target.followers.push(userId);
-      if (!user.following.includes(targetId)) user.following.push(targetId);
-      await target.save();
-      await user.save();
-      
-      // Send follow notification if enabled
-      if (target.notificationPreferences.follows) {
-        sendFollowNotification(userId, targetId);
-      }
-      
-      return res.status(200).json({ success: true, message: "Followed successfully ✅" });
-    }
-
-    if (!target.followerRequests.includes(userId)) {
-      target.followerRequests.push(userId);
-      await target.save();
-
-      // Send follow request notification if enabled
-      if (target.notificationPreferences.followRequests) {
-        sendFollowRequestNotification(userId, targetId);
-      }
-    }
-    return res.status(200).json({ success: true, message: "Follow request sent ✅" });
-
-  } catch (error) {
-    res.status(500).json({ success: false, message: "Server error", error: error.message });
-  }
-};
-
-// Approve follower
-exports.approveFollower = async (req, res) => {
-    try {
-    const { userId, followerId } = req.body;
-
-    if (!mongoose.Types.ObjectId.isValid(userId) || !mongoose.Types.ObjectId.isValid(followerId)) {
-      return res.status(400).json({ success: false, message: "Invalid IDs" });
-    }
-
+    const { userId, followerId } = req.body; // userId = target user, followerId = sender
     const user = await Auth.findById(userId);
     const follower = await Auth.findById(followerId);
 
@@ -63,84 +13,102 @@ exports.approveFollower = async (req, res) => {
       return res.status(404).json({ success: false, message: "User not found" });
     }
 
-    // ✅ Ensure follower exists in user.followers (auto-add if missing)
-    if (!user.followers.includes(followerId)) {
-      user.followers.push(followerId);
+    // Already following
+    if (user.followers.includes(followerId)) {
+      return res.status(400).json({ success: false, message: "Already following this user" });
     }
 
-    // ✅ Make following mutual
-    if (!user.following.includes(followerId)) {
-      user.following.push(followerId);
+    // Already requested
+    if (user.followerRequests.includes(followerId)) {
+      return res.status(400).json({ success: false, message: "Follow request already sent" });
     }
-    if (!follower.following.includes(userId)) {
-      follower.following.push(userId);
+
+    user.followerRequests.push(followerId);
+    await user.save();
+
+    res.status(200).json({ success: true, message: "Follow request sent" });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+
+
+// Approve Follow Request
+exports.approveFollowRequest = async (req, res) => {
+  try {
+    const { userId, requesterId } = req.body; // userId = current user approving, requesterId = who sent request
+    const user = await Auth.findById(userId);
+    const requester = await Auth.findById(requesterId);
+
+    if (!user || !requester) {
+      return res.status(404).json({ success: false, message: "User not found" });
     }
+
+    if (!user.followerRequests.includes(requesterId)) {
+      return res.status(400).json({ success: false, message: "No follow request found" });
+    }
+
+    // Move to followers/following
+    user.followerRequests.pull(requesterId);
+    user.followers.push(requesterId);
+    requester.following.push(userId);
 
     await user.save();
-    await follower.save();
+    await requester.save();
 
-    return res.status(200).json({
-      success: true,
-      message: "Follower approved successfully. You can now chat if both follow each other.",
-    });
+    res.status(200).json({ success: true, message: "Follow request approved" });
   } catch (error) {
-    console.error("Error approving follower:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// Reject Follow Request
+exports.rejectFollowRequest = async (req, res) => {
+  try {
+    const { userId, followerId } = req.body;
+
+    if (!mongoose.Types.ObjectId.isValid(userId) || !mongoose.Types.ObjectId.isValid(followerId)) {
+      return res.status(400).json({ success: false, message: "Invalid userId or followerId" });
+    }
+
+    const user = await Auth.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    // Convert followerId to ObjectId for comparison
+    const followerObjectId = new mongoose.Types.ObjectId(followerId);
+
+    // Check if followerId exists in followerRequests
+    const requestIndex = user.followerRequests.findIndex(
+      id => id.toString() === followerObjectId.toString()
+    );
+
+    if (requestIndex === -1) {
+      return res.status(400).json({ success: false, message: "No follow request found" });
+    }
+
+    // Remove the follower from followerRequests
+    user.followerRequests.splice(requestIndex, 1);
+    await user.save();
+
+    return res.status(200).json({ success: true, message: "Follow request rejected" });
+  } catch (error) {
+    console.error(error);
     return res.status(500).json({ success: false, message: "Server error" });
   }
 };
 
-// Reject follower
-exports.rejectFollower = async (req, res) => {
-  try {
-    const { userId, followerId } = req.body;
-    const user = await Auth.findById(userId);
-    if (!user) return res.status(404).json({ success: false, message: "User not found" });
 
-    user.followerRequests = user.followerRequests.filter(id => id.toString() !== followerId);
-    await user.save();
 
-    res.status(200).json({ success: true, message: "Follower request rejected ❌" });
-  } catch (error) {
-    res.status(500).json({ success: false, message: "Server error", error: error.message });
-  }
-};
-
-// Block follower
-exports.blockFollower = async (req, res) => {
-  try {
-    const { userId, followerId } = req.body;
-    const user = await Auth.findById(userId);
-    const follower = await Auth.findById(followerId);
-
-    if (!user || !follower) return res.status(404).json({ success: false, message: "User not found" });
-
-    user.followers = user.followers.filter(id => id.toString() !== followerId);
-    follower.following = follower.following.filter(id => id.toString() !== userId);
-
-    if (!user.blockedFollowers.map(id => id.toString()).includes(followerId)) {
-      user.blockedFollowers.push(followerId);
-    }
-
-    await user.save();
-    await follower.save();
-
-    res.status(200).json({ success: true, message: "Follower blocked ⛔" });
-
-  } catch (error) {
-    res.status(500).json({ success: false, message: "Server error", error: error.message });
-  }
-};
-
-// Get followers
+// ✅ Get followers (+ pending)
 exports.getFollowers = async (req, res) => {
   try {
     const { userId } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(userId))
-      return res.status(400).json({ success: false, message: "Invalid userId" });
-
     const user = await Auth.findById(userId)
-      .populate("followers", "fullName profile.username profile.image")
-      .populate("followerRequests", "fullName profile.username profile.image");
+      .populate("followers", "fullName username")
+      .populate("followerRequests", "fullName username");
 
     if (!user) return res.status(404).json({ success: false, message: "User not found" });
 
@@ -150,214 +118,290 @@ exports.getFollowers = async (req, res) => {
       pendingRequests: user.followerRequests
     });
   } catch (error) {
-    res.status(500).json({ success: false, message: "Server error", error: error.message });
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
-// Get following
+// ✅ Get following
 exports.getFollowing = async (req, res) => {
   try {
     const { userId } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(userId))
-      return res.status(400).json({ success: false, message: "Invalid userId" });
-
-    const user = await Auth.findById(userId)
-      .populate("following", "fullName profile.username profile.image");
+    const user = await Auth.findById(userId).populate("following", "fullName username");
 
     if (!user) return res.status(404).json({ success: false, message: "User not found" });
 
-    res.status(200).json({
-      success: true,
-      following: user.following
-    });
+    res.status(200).json({ success: true, following: user.following });
   } catch (error) {
-    res.status(500).json({ success: false, message: "Server error", error: error.message });
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
-// Update followers
-exports.updateFollowers = async (req, res) => {
+
+// ✅ Get all followers across all users
+exports.getAllFollowers = async (req, res) => {
   try {
-    const { userId, approve = [], reject = [] } = req.body;
+    const users = await Auth.find().populate("followers", "fullName username email");
+    let allFollowers = [];
 
-    if (!mongoose.Types.ObjectId.isValid(userId)) {
-      return res.status(400).json({ success: false, message: "Invalid userId" });
-    }
+    users.forEach(user => {
+      allFollowers.push({ userId: user._id, followers: user.followers });
+    });
 
-    const user = await Auth.findById(userId);
+    res.status(200).json({ success: true, allFollowers });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// ✅ Get all following across all users
+exports.getAllFollowing = async (req, res) => {
+  try {
+    const users = await Auth.find().populate("following", "fullName username email");
+    let allFollowing = [];
+
+    users.forEach(user => {
+      allFollowing.push({ userId: user._id, following: user.following });
+    });
+
+    res.status(200).json({ success: true, allFollowing });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+exports.getAllRequests = async (req, res) => {
+  try {
+    const users = await Auth.find().populate("followerRequests", "fullName username email");
+    let allRequests = [];
+
+    users.forEach(user => {
+      if (user.followerRequests.length > 0) {
+        allRequests.push({ userId: user._id, requests: user.followerRequests });
+      }
+    });
+
+    res.status(200).json({ success: true, allRequests });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+
+// ✅ Get a specific follower request by requester's ID
+exports.getRequestById = async (req, res) => {
+  try {
+    const { userId, requesterId } = req.params;
+    const user = await Auth.findById(userId).populate("followerRequests", "fullName username email");
+
     if (!user) return res.status(404).json({ success: false, message: "User not found" });
 
-    for (const followerId of approve) {
-      if (user.followerRequests.map(id => id.toString()).includes(followerId)) {
-        user.followerRequests = user.followerRequests.filter(id => id.toString() !== followerId);
+    const request = user.followerRequests.find(req => req._id.toString() === requesterId);
+    if (!request) return res.status(404).json({ success: false, message: "Request not found" });
 
-        if (!user.followers.map(id => id.toString()).includes(followerId)) {
-          user.followers.push(followerId);
-        }
+    res.status(200).json({ success: true, request });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
 
-        const follower = await Auth.findById(followerId);
-        if (follower && !follower.following.map(id => id.toString()).includes(userId)) {
-          follower.following.push(userId);
-          await follower.save();
-          
-          // Send follow approval notification if enabled
-          if (follower.notificationPreferences.followApprovals) {
-            sendFollowApprovalNotification(userId, followerId);
-          }
-        }
-      }
+
+// ✅ Get pending requests only
+exports.getRequests = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const user = await Auth.findById(userId).populate("followerRequests", "fullName username");
+    if (!user) return res.status(404).json({ success: false, message: "User not found" });
+
+    res.status(200).json({ success: true, requests: user.followerRequests });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// ✅ Get blocked followers
+exports.Blocked = async (req, res) => {
+  try {
+    const { userId, blockUserId } = req.body;
+
+    // Find both users
+    const user = await Auth.findById(userId);
+    const targetUser = await Auth.findById(blockUserId);
+
+    if (!user || !targetUser) {
+      return res.status(404).json({ success: false, message: "User not found" });
     }
 
-    for (const followerId of reject) {
-      user.followerRequests = user.followerRequests.filter(id => id.toString() !== followerId);
-      user.followers = user.followers.filter(id => id.toString() !== followerId);
+    // Remove from followers & following
+    user.followers.pull(blockUserId);
+    user.following.pull(blockUserId);
 
-      const follower = await Auth.findById(followerId);
-      if (follower) {
-        follower.following = follower.following.filter(id => id.toString() !== userId);
-        await follower.save();
-      }
+    // Optional: Remove current user from targetUser's followers/following
+    targetUser.followers.pull(userId);
+    targetUser.following.pull(userId);
+
+    // Add to blockedFollowers if not already blocked
+    if (!user.blockedFollowers.includes(blockUserId)) {
+      user.blockedFollowers.push(blockUserId);
     }
 
     await user.save();
+    await targetUser.save();
 
-    const updatedUser = await Auth.findById(userId)
-      .populate("followers", "fullName profile")
-      .populate("followerRequests", "fullName profile");
-
-    res.status(200).json({
-      success: true,
-      message: "Followers updated ✅",
-      data: {
-        followers: updatedUser.followers,
-        pendingRequests: updatedUser.followerRequests
-      }
-    });
-
+    res.status(200).json({ success: true, message: "User blocked successfully" });
   } catch (error) {
-    res.status(500).json({ success: false, message: "Server error", error: error.message });
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
-// Delete follower
-exports.deleteFollower = async (req, res) => {
+
+// ✅ Get blocked users for a specific user
+exports.getBlockedByUserId = async (req, res) => {
   try {
-    const { userId, followerId } = req.body;
+    const { userId } = req.params;
+    const user = await Auth.findById(userId).populate("blockedFollowers", "fullName username email");
+    if (!user) return res.status(404).json({ success: false, message: "User not found" });
+
+    res.status(200).json({ success: true, blocked: user.blockedFollowers });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// ✅ Get all blocked users across all users
+exports.getAllBlocked = async (req, res) => {
+  try {
+    const users = await Auth.find().populate("blockedFollowers", "fullName username email");
+    let allBlocked = [];
+
+    users.forEach(user => {
+      allBlocked.push({ userId: user._id, blocked: user.blockedFollowers });
+    });
+
+    res.status(200).json({ success: true, allBlocked });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// ✅ Remove follower
+exports.removeFollower = async (req, res) => {
+  try {
+    const { userId, followerId } = req.params; // get IDs from URL
     const user = await Auth.findById(userId);
     const follower = await Auth.findById(followerId);
 
-    if (!user || !follower) return res.status(404).json({ success: false, message: "User not found" });
+    if (!user || !follower)
+      return res.status(404).json({ success: false, message: "User not found" });
 
-    user.followers = user.followers.filter(id => id.toString() !== followerId);
-    follower.following = follower.following.filter(id => id.toString() !== userId);
+    user.followers.pull(followerId);
+    follower.following.pull(userId);
 
     await user.save();
     await follower.save();
 
-    res.status(200).json({ success: true, message: "Follower removed ✅" });
-
+    res.status(200).json({ success: true, message: "Follower removed" });
   } catch (error) {
-    res.status(500).json({ success: false, message: "Server error", error: error.message });
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
-// Delete following
-exports.deleteFollowing = async (req, res) => {
+// ✅ Remove following
+exports.removeFollowing = async (req, res) => {
   try {
-    const { userId, targetId } = req.body;
+    const { userId, followingId } = req.params; // get IDs from URL
     const user = await Auth.findById(userId);
-    const target = await Auth.findById(targetId);
+    const followingUser = await Auth.findById(followingId);
 
-    if (!user || !target) return res.status(404).json({ success: false, message: "User not found" });
+    if (!user || !followingUser)
+      return res.status(404).json({ success: false, message: "User not found" });
 
-    user.following = user.following.filter(id => id.toString() !== targetId);
-    target.followers = target.followers.filter(id => id.toString() !== userId);
+    user.following.pull(followingId);
+    followingUser.followers.pull(userId);
 
     await user.save();
-    await target.save();
+    await followingUser.save();
 
-    res.status(200).json({ success: true, message: "Unfollowed successfully ✅" });
-
+    res.status(200).json({ success: true, message: "Following removed" });
   } catch (error) {
-    res.status(500).json({ success: false, message: "Server error", error: error.message });
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
-// Toggle follow/unfollow
-exports.toggleFollow = async (req, res) => {
+// Unblock using body (POST/PUT)
+exports.unblockFollower = async (req, res) => {
   try {
-    const { userId, targetId } = req.body;
+    const { userId, followerId } = req.body;
+    const user = await Auth.findById(userId);
 
-    if (!mongoose.Types.ObjectId.isValid(userId) || !mongoose.Types.ObjectId.isValid(targetId)) {
-      return res.status(400).json({ success: false, message: "Invalid userId or targetId" });
-    }
+    if (!user)
+      return res.status(404).json({ success: false, message: "User not found" });
+
+    user.blockedFollowers.pull(followerId);
+    await user.save();
+
+    res.status(200).json({ success: true, message: "Follower unblocked successfully" });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// Unblock using params (DELETE)
+exports.unblockFollowerByParams = async (req, res) => {
+  try {
+    const { userId, followerId } = req.params;
+    const user = await Auth.findById(userId);
+
+    if (!user)
+      return res.status(404).json({ success: false, message: "User not found" });
+
+    user.blockedFollowers.pull(followerId);
+    await user.save();
+
+    res.status(200).json({ success: true, message: "Follower unblocked successfully" });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+
+// ✅ Get follow status
+exports.getFollowStatus = async (req, res) => {
+  try {
+    const { userId, otherUserId } = req.params;
+    const user = await Auth.findById(userId);
+
+    if (!user) return res.status(404).json({ success: false, message: "User not found" });
+
+    let status = "not_following";
+    if (user.following.includes(otherUserId)) status = "following";
+    if (user.followerRequests.includes(otherUserId)) status = "requested";
+    if (user.blockedFollowers.includes(otherUserId)) status = "blocked";
+
+    res.status(200).json({ success: true, status });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+exports.checkFollowStatus = async (req, res) => {
+  try {
+    const { userId, targetId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(userId) || !mongoose.Types.ObjectId.isValid(targetId))
+      return res.status(400).json({ success: false, message: "Invalid IDs" });
 
     const user = await Auth.findById(userId);
-    const target = await Auth.findById(targetId);
 
-    if (!user || !target) {
-      return res.status(404).json({ success: false, message: "User not found" });
-    }
+    if (!user) return res.status(404).json({ success: false, message: "User not found" });
 
-    if (target.blockedFollowers.includes(userId)) {
-      return res.status(403).json({ success: false, message: "You are blocked by this user" });
-    }
-
-    // Check if already following
     const isFollowing = user.following.includes(targetId);
+    const isRequested = user.followerRequests.includes(targetId);
 
-    if (isFollowing) {
-      // Unfollow logic
-      user.following.pull(targetId);
-      target.followers.pull(userId);
-
-      await user.save();
-      await target.save();
-
-      return res.status(200).json({
-        success: true,
-        message: "Unfollowed successfully ✅",
-        action: "unfollowed"
-      });
-    } else {
-      // Follow logic
-      if (target.privacy.profileVisibility === "public") {
-        user.following.push(targetId);
-        target.followers.push(userId);
-
-        await user.save();
-        await target.save();
-
-        // Send follow notification if enabled
-        if (target.notificationPreferences.follows) {
-          sendFollowNotification(userId, targetId);
-        }
-
-        return res.status(200).json({
-          success: true,
-          message: "Followed successfully ✅",
-          action: "followed"
-        });
-      } else {
-        // Private account - send follow request
-        if (!target.followerRequests.includes(userId)) {
-          target.followerRequests.push(userId);
-          await target.save();
-
-          // Send follow request notification if enabled
-          if (target.notificationPreferences.followRequests) {
-            sendFollowRequestNotification(userId, targetId);
-          }
-        }
-
-        return res.status(200).json({
-          success: true,
-          message: "Follow request sent ✅",
-          action: "requested"
-        });
-      }
-    }
-
+    res.status(200).json({
+      success: true,
+      following: isFollowing,
+      requested: isRequested
+    });
   } catch (error) {
     res.status(500).json({ success: false, message: "Server error", error: error.message });
   }

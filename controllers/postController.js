@@ -284,21 +284,71 @@ exports.toggleLikePost = async (req, res) => {
   }
 };
 
+// ✅ Get All Likes for a Post
+exports.getAllLikes = async (req, res) => {
+  try {
+    const { postOwnerId, postId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(postOwnerId) || !mongoose.Types.ObjectId.isValid(postId)) {
+      return res.status(400).json({ success: false, message: "Invalid IDs" });
+    }
+
+    const postOwner = await Auth.findById(postOwnerId);
+    if (!postOwner) return res.status(404).json({ success: false, message: "Post owner not found" });
+
+    const post = postOwner.posts.id(postId);
+    if (!post) return res.status(404).json({ success: false, message: "Post not found" });
+
+    res.status(200).json({ success: true, likes: post.likes, likesCount: post.likes.length });
+  } catch (err) {
+    res.status(500).json({ success: false, message: "Server error", error: err.message });
+  }
+};
+
+// ✅ Get Like by User ID
+exports.getLikeById = async (req, res) => {
+  try {
+    const { postOwnerId, postId, userId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(postOwnerId) || !mongoose.Types.ObjectId.isValid(postId) || !mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ success: false, message: "Invalid IDs" });
+    }
+
+    const postOwner = await Auth.findById(postOwnerId);
+    if (!postOwner) return res.status(404).json({ success: false, message: "Post owner not found" });
+
+    const post = postOwner.posts.id(postId);
+    if (!post) return res.status(404).json({ success: false, message: "Post not found" });
+
+    const liked = post.likes.includes(userId);
+
+    res.status(200).json({ success: true, liked });
+  } catch (err) {
+    res.status(500).json({ success: false, message: "Server error", error: err.message });
+  }
+};
+
+
 // Add comment to a post with mentions
 exports.addComment = async (req, res) => {
-     try {
+  try {
     const { userId, postId, text } = req.body;
 
-    // Validate inputs
-    if (!mongoose.Types.ObjectId.isValid(userId) || !mongoose.Types.ObjectId.isValid(postId)) {
-      return res.status(400).json({ success: false, message: "Invalid parameters" });
+    // ✅ Validate userId only
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ success: false, message: "Invalid userId" });
+    }
+
+    // ✅ Validate postId as non-empty string
+    if (!postId || postId.trim() === "") {
+      return res.status(400).json({ success: false, message: "Invalid postId" });
     }
 
     if (!text || text.trim() === "") {
       return res.status(400).json({ success: false, message: "Comment text is required" });
     }
 
-    // Find the post
+    // ✅ Find the post inside user's posts array
     const postOwner = await Auth.findOne({ "posts._id": postId });
     if (!postOwner) {
       return res.status(404).json({ success: false, message: "Post not found" });
@@ -309,11 +359,11 @@ exports.addComment = async (req, res) => {
       return res.status(404).json({ success: false, message: "Post not found" });
     }
 
-    // Extract mentions from comment text
+    // ✅ Extract mentions from text
     const mentionRegex = /@(\w+)/g;
     let mentions = [];
     let match;
-    
+
     while ((match = mentionRegex.exec(text)) !== null) {
       const mentionedUser = await Auth.findOne({ "profile.username": match[1] });
       if (mentionedUser) {
@@ -321,44 +371,155 @@ exports.addComment = async (req, res) => {
       }
     }
 
-    // Add new comment WITH mentions
+    // ✅ Add comment
     const newComment = {
       userId,
       text: text.trim(),
       createdAt: new Date(),
-      mentions: mentions
+      mentions,
     };
 
     post.comments.push(newComment);
     await postOwner.save();
 
-    // Populate user info for response
+    // ✅ Populate user info for response
     await postOwner.populate("posts.comments.userId", "fullName profile.username profile.image");
     await postOwner.populate("posts.comments.mentions", "fullName profile.username profile.image");
 
     const updatedPost = postOwner.posts.id(postId);
     const savedComment = updatedPost.comments[updatedPost.comments.length - 1];
 
-    // Send comment notification if enabled for post owner (non-blocking)
-    if (postOwner.notificationPreferences.comments && postOwner._id.toString() !== userId) {
+    // ✅ Send comment notification (non-blocking)
+    if (postOwner.notificationPreferences?.comments && postOwner._id.toString() !== userId) {
       exports.sendCommentNotification(userId, postOwner._id, postId, text.trim())
-        .catch(error => console.error('Comment notification error:', error));
+        .catch(error => console.error("Comment notification error:", error));
     }
 
-    // Send mention notifications if enabled for mentioned users (non-blocking)
+    // ✅ Send mention notifications (non-blocking)
     for (const mentionedUserId of mentions) {
       const mentionedUser = await Auth.findById(mentionedUserId);
-      if (mentionedUser && mentionedUser.notificationPreferences.mentions) {
+      if (mentionedUser && mentionedUser.notificationPreferences?.mentions) {
         exports.sendMentionNotification(userId, mentionedUserId, postId, text.trim())
-          .catch(error => console.error('Mention notification error:', error));
+          .catch(error => console.error("Mention notification error:", error));
       }
     }
 
     res.status(201).json({
       success: true,
       message: "Comment added successfully ✅",
-      data: savedComment
+      data: savedComment,
     });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ success: false, message: "Server error", error: error.message });
+  }
+};
+
+
+// ---------------- Get all comments for a post ----------------
+exports.getCommentsByPostId = async (req, res) => {
+  try {
+    const { postId } = req.params;
+
+    // Validate postId only (treat as string)
+    if (!postId || postId.trim() === "") {
+      return res.status(400).json({ success: false, message: "Invalid postId" });
+    }
+
+    // Find the post
+    const postOwner = await Auth.findOne({ "posts._id": postId })
+      .populate("posts.comments.userId", "fullName profile.username profile.image")
+      .populate("posts.comments.mentions", "fullName profile.username profile.image");
+
+    if (!postOwner) {
+      return res.status(404).json({ success: false, message: "Post not found" });
+    }
+
+    const post = postOwner.posts.id(postId);
+    if (!post) {
+      return res.status(404).json({ success: false, message: "Post not found" });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Comments fetched successfully ✅",
+      data: post.comments,
+    });
+
+  } catch (error) {
+    console.error("getCommentsByPostId error:", error);
+    res.status(500).json({ success: false, message: "Server error", error: error.message });
+  }
+};
+// ---------------- Get a comment by ID ----------------
+exports.getCommentById = async (req, res) => {
+  try {
+    const { postId, commentId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(postId) || !mongoose.Types.ObjectId.isValid(commentId)) {
+      return res.status(400).json({ success: false, message: "Invalid IDs" });
+    }
+
+    const postOwner = await Auth.findOne({ "posts._id": postId })
+      .populate("posts.comments.userId", "fullName profile.username profile.image")
+      .populate("posts.comments.mentions", "fullName profile.username profile.image");
+
+    if (!postOwner) return res.status(404).json({ success: false, message: "Post not found" });
+
+    const post = postOwner.posts.id(postId);
+    const comment = post.comments.id(commentId);
+
+    if (!comment) return res.status(404).json({ success: false, message: "Comment not found" });
+
+    res.status(200).json({ success: true, comment });
+
+  } catch (error) {
+    res.status(500).json({ success: false, message: "Server error", error: error.message });
+  }
+};
+
+// ---------------- Delete a comment by ID ----------------
+// Delete a comment by ID (with userId from params)
+exports.deleteCommentById = async (req, res) => {
+  try {
+    const { postId, commentId, userId } = req.params;
+
+    // Validate IDs
+    if (
+      !mongoose.Types.ObjectId.isValid(postId) ||
+      !mongoose.Types.ObjectId.isValid(commentId) ||
+      !mongoose.Types.ObjectId.isValid(userId)
+    ) {
+      return res.status(400).json({ success: false, message: "Invalid IDs" });
+    }
+
+    // Find the post owner
+    const postOwner = await Auth.findOne({ "posts._id": postId });
+    if (!postOwner) {
+      return res.status(404).json({ success: false, message: "Post not found" });
+    }
+
+    const post = postOwner.posts.id(postId);
+    if (!post) {
+      return res.status(404).json({ success: false, message: "Post not found" });
+    }
+
+    // Find the comment
+    const comment = post.comments.id(commentId);
+    if (!comment) {
+      return res.status(404).json({ success: false, message: "Comment not found" });
+    }
+
+    // Optional: check if the user deleting is the comment owner or post owner
+    if (comment.userId.toString() !== userId && postOwner._id.toString() !== userId) {
+      return res.status(403).json({ success: false, message: "Not authorized to delete this comment" });
+    }
+
+    // Remove comment
+    comment.remove();
+    await postOwner.save();
+
+    res.status(200).json({ success: true, message: "Comment deleted successfully ✅" });
 
   } catch (error) {
     console.error(error);
@@ -369,7 +530,7 @@ exports.addComment = async (req, res) => {
 // Delete a post
 exports.deletePost = async (req, res) => {
   try {
-    const { userId, postId } = req.body;
+    const { userId, postId } = req.params; // <-- get from params now
 
     if (!mongoose.Types.ObjectId.isValid(userId) || !mongoose.Types.ObjectId.isValid(postId)) {
       return res.status(400).json({ success: false, message: "Invalid userId or postId" });
@@ -397,7 +558,6 @@ exports.deletePost = async (req, res) => {
     res.status(500).json({ success: false, message: "Server error", error: error.message });
   }
 };
-
 // ------------------ SAVE POST CONTROLLERS ------------------
 
 // Save/Unsave Post
@@ -411,7 +571,7 @@ exports.toggleSavePost = async (req, res) => {
 
     const user = await Auth.findById(userId);
     const postOwner = await Auth.findById(postOwnerId);
-    
+
     if (!user || !postOwner) {
       return res.status(404).json({ success: false, message: "User not found" });
     }
@@ -459,7 +619,7 @@ exports.getSavedPosts = async (req, res) => {
         .populate("posts.userId", "fullName profile.username profile.image")
         .populate("posts.comments.userId", "fullName profile.username profile.image")
         .populate("posts.mentions", "fullName profile.username profile.image");
-      
+
       if (postOwner) {
         const post = postOwner.posts.id(postId);
         if (post) {
@@ -482,7 +642,59 @@ exports.getSavedPosts = async (req, res) => {
 };
 
 
+// ✅ Get a single saved post by ID
+exports.getSavedPostById = async (req, res) => {
+  try {
+    const { userId, postId } = req.params;
 
+    if (!mongoose.Types.ObjectId.isValid(userId) || !mongoose.Types.ObjectId.isValid(postId)) {
+      return res.status(400).json({ success: false, message: "Invalid parameters" });
+    }
+
+    const user = await Auth.findById(userId);
+    if (!user) return res.status(404).json({ success: false, message: "User not found" });
+
+    if (!user.savedPosts.includes(postId)) {
+      return res.status(404).json({ success: false, message: "Saved post not found" });
+    }
+
+    const postOwner = await Auth.findOne({ "posts._id": postId });
+    if (!postOwner) return res.status(404).json({ success: false, message: "Post not found" });
+
+    const post = postOwner.posts.id(postId);
+    res.status(200).json({ success: true, post });
+  } catch (error) {
+    res.status(500).json({ success: false, message: "Server error", error: error.message });
+  }
+};
+
+exports.deleteSavedPost = async (req, res) => {
+  try {
+    const { userId, postId } = req.params;
+
+    // Validate IDs
+    if (!mongoose.Types.ObjectId.isValid(userId) || !mongoose.Types.ObjectId.isValid(postId)) {
+      return res.status(400).json({ success: false, message: "Invalid parameters" });
+    }
+
+    const user = await Auth.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    const isSaved = user.savedPosts.some(id => id.toString() === postId);
+    if (!isSaved) {
+      return res.status(404).json({ success: false, message: "Post not found in saved posts" });
+    }
+
+    user.savedPosts.pull(postId);
+    await user.save();
+
+    res.status(200).json({ success: true, message: "Saved post deleted successfully" });
+  } catch (error) {
+    res.status(500).json({ success: false, message: "Server error", error: error.message });
+  }
+};
 // Send notification to followers when a new post is created
 exports.sendPostNotification = async (userId, postId, postDescription) => {
   try {
@@ -528,7 +740,7 @@ exports.sendFollowRequestNotification = async (followerId, targetId) => {
     const target = await Auth.findById(targetId);
 
     if (!follower || !target) return;
-    
+
     // Check if target has follow request notifications enabled
     if (!target.notificationPreferences.followRequests) return;
 
@@ -553,7 +765,7 @@ exports.sendFollowNotification = async (followerId, targetId) => {
     const target = await Auth.findById(targetId);
 
     if (!follower || !target) return;
-    
+
     // Check if target has follow notifications enabled
     if (!target.notificationPreferences.follows) return;
 
@@ -578,7 +790,7 @@ exports.sendFollowApprovalNotification = async (userId, followerId) => {
     const follower = await Auth.findById(followerId);
 
     if (!user || !follower) return;
-    
+
     // Check if follower has follow approval notifications enabled
     if (!follower.notificationPreferences.followApprovals) return;
 
@@ -603,7 +815,7 @@ exports.sendLikeNotification = async (userId, postOwnerId, postId) => {
     const postOwner = await Auth.findById(postOwnerId);
 
     if (!user || !postOwner || userId.toString() === postOwnerId.toString()) return;
-    
+
     // Check if post owner has like notifications enabled
     if (!postOwner.notificationPreferences.likes) return;
 
@@ -629,7 +841,7 @@ exports.sendCommentNotification = async (userId, postOwnerId, postId, commentTex
     const postOwner = await Auth.findById(postOwnerId);
 
     if (!user || !postOwner || userId.toString() === postOwnerId.toString()) return;
-    
+
     // Check if post owner has comment notifications enabled
     if (!postOwner.notificationPreferences.comments) return;
 
@@ -645,10 +857,10 @@ exports.sendCommentNotification = async (userId, postOwnerId, postId, commentTex
     });
 
     await notification.save();
-    
+
     // Optional: Add real-time notification (socket.io, push notification, etc.)
     console.log(`Comment notification sent to ${postOwnerId} from ${userId}`);
-    
+
   } catch (error) {
     console.error("Error sending comment notification:", error);
   }
@@ -661,7 +873,7 @@ exports.sendMentionNotification = async (senderId, recipientId, postId, messageT
     const recipient = await Auth.findById(recipientId);
 
     if (!sender || !recipient || senderId.toString() === recipientId.toString()) return;
-    
+
     // Check if recipient has mention notifications enabled
     if (!recipient.notificationPreferences.mentions) return;
 
@@ -677,10 +889,10 @@ exports.sendMentionNotification = async (senderId, recipientId, postId, messageT
     });
 
     await notification.save();
-    
+
     // Optional: Add real-time notification
     console.log(`Mention notification sent to ${recipientId} from ${senderId}`);
-    
+
   } catch (error) {
     console.error("Error sending mention notification:", error);
   }

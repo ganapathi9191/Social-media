@@ -1,214 +1,284 @@
 const VideoMeet = require("../models/videoMeetModel");
-const { v4: uuidv4 } = require("uuid");
 const { uploadImages } = require("../config/cloudinary");
+const { Auth } = require("../models/authModel"); // import your Auth model
 
-// Create Meeting
+
+// Create a new video meeting
 exports.createVideoMeet = async (req, res) => {
-   try {
+  try {
     const { title, host } = req.body;
-
     if (!title || !host) {
-      return res.status(400).json({ success: false, message: "Title and host required" });
+      return res.status(400).json({ success: false, message: "Title and host are required" });
     }
 
-    const meetLink = uuidv4(); // generate unique UUID
-
-    const meet = new VideoMeet({
-      title,
-      host,
-      meetLink,
-    });
-
-    await meet.save();
-
-    const fullMeetLink = `${process.env.MEET_DOMAIN}/meet/${meetLink}`;
-
-    return res.status(201).json({
-      success: true,
-      data: {
-        id: meet._id,
-        title: meet.title,
-        host: meet.host,
-        meetingLink: fullMeetLink,
-      },
-    });
+    const videoMeet = await VideoMeet.create({ title, host });
+    res.status(201).json({ success: true, data: videoMeet });
   } catch (error) {
-    console.error("❌ Error creating meet:", error);
-    return res.status(500).json({ success: false, message: "Server error" });
+    console.error(error);
+    res.status(500).json({ success: false, message: error.message });
   }
 };
-// Get Meeting by link
-exports.getMeetByLink = async (req, res) => {
+
+// Get all meetings
+exports.getAllVideoMeets = async (req, res) => {
   try {
-    let { meetLink } = req.params;
+    const meets = await VideoMeet.find()
+      .populate("host", "firstName lastName email")
+      .populate("participants.user", "firstName lastName email")
+      .populate("chat.sender", "firstName lastName email")
+      .populate("sharedMedia.addedBy", "firstName lastName email");
+     res.status(200).json({ success: true, data: meets });
+  } catch (error) {
+    res.status(500).json({ success: false, message: "Server error", error: error.message });
+  }
+};
 
-    // Clean the meetLink (in case frontend sends full URL)
-    if (meetLink.includes("/")) {
-      meetLink = meetLink.split("/").pop();
-    }
-
-    // Find by meetLink (UUID stored in DB)
-    const meet = await VideoMeet.findOne({ meetLink: meetLink.trim() });
+// Get meeting by ID
+exports.getVideoMeetById = async (req, res) => {
+  try {
+    const { meetid } = req.params; // meetid from URL
+    const meet = await VideoMeet.findById(meetid) // use meetid here
+      .populate("host", "firstName lastName email")
+      .populate("participants.user", "firstName lastName email")
+      .populate("chat.sender", "firstName lastName email")
+      .populate("sharedMedia.addedBy", "firstName lastName email");
 
     if (!meet) {
-      return res.status(404).json({
-        success: false,
-        message: `Meeting not found for link: ${meetLink}`
-      });
+      return res.status(404).json({ success: false, message: "Meeting not found" });
     }
 
-    // Return with full URL
-    const fullMeetLink = `${process.env.MEET_DOMAIN}/meet/${meet.meetLink}`;
+    res.status(200).json({ success: true, data: meet });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+// Update meeting by ID
+exports.updateVideoMeetById = async (req, res) => {
+  try {
+    const { meetid } = req.params;
+    const updates = req.body;
 
-    return res.status(200).json({
-      success: true,
-      data: {
-        id: meet._id,
-        title: meet.title,
-        host: meet.host,
-        meetingLink: fullMeetLink,
-        createdAt: meet.createdAt
+    const meet = await VideoMeet.findByIdAndUpdate(meetid, updates, {
+      new: true, // return updated document
+      runValidators: true, // validate before saving
+    })
+      .populate("host", "firstName lastName email")
+      .populate("participants.user", "firstName lastName email")
+      .populate("chat.sender", "firstName lastName email")
+      .populate("sharedMedia.addedBy", "firstName lastName email");
+
+    if (!meet) {
+      return res.status(404).json({ success: false, message: "Meeting not found" });
+    }
+
+    res.status(200).json({ success: true, message: "Meeting updated successfully", data: meet });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+
+// Delete meeting by ID
+exports.deleteVideoMeetById = async (req, res) => {
+  try {
+    const { meetid } = req.params;
+    const meet = await VideoMeet.findByIdAndDelete(meetid);
+    if (!meet) return res.status(404).json({ success: false, message: "Meeting not found" });
+    res.status(200).json({ success: true, message: "Meeting deleted successfully" });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// Upload media to meeting
+exports.uploadMedia = async (req, res) => {
+  try {
+    const { meetId } = req.params;
+    const file = req.file;
+    if (!file) return res.status(400).json({ success: false, message: "No file uploaded" });
+
+    const fileUrl = await uploadImages(file.buffer, file.originalname);
+    const meet = await VideoMeet.findById(meetId);
+    if (!meet) return res.status(404).json({ success: false, message: "Meeting not found" });
+
+    meet.chat.push({ sender: req.body.sender, media: [{ url: fileUrl, type: file.mimetype.split("/")[0] }] });
+    await meet.save();
+
+    res.status(200).json({ success: true, message: "File uploaded", data: fileUrl });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+// Add chat message
+exports.addChatMessage = async (req, res) => {
+  try {
+    const { meetId } = req.params;
+    const { sender, message } = req.body;
+    const meet = await VideoMeet.findById(meetId);
+    if (!meet) return res.status(404).json({ success: false, message: "Meeting not found" });
+    meet.chat.push({ sender, message });
+    await meet.save();
+    res.status(200).json({ success: true, message: "Message added", data: meet.chat });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// ✅ Get all chat messages by Meet ID (Read)
+exports.getAllMessagesByMeetId = async (req, res) => {
+  try {
+    const { meetId } = req.params;
+
+    const meet = await VideoMeet.findById(meetId);
+    if (!meet) return res.status(404).json({ success: false, message: "Meeting not found" });
+
+    res.status(200).json({ success: true, data: meet.chat });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+
+// ✅ Update chat message by messageId (Update)
+exports.updateChatMessage = async (req, res) => {
+  try {
+    const { meetId, messageId } = req.params;
+    const { message } = req.body;
+
+    const meet = await VideoMeet.findById(meetId);
+    if (!meet) return res.status(404).json({ success: false, message: "Meeting not found" });
+
+    const chatMessage = meet.chat.id(messageId);
+    if (!chatMessage) return res.status(404).json({ success: false, message: "Message not found" });
+
+    chatMessage.message = message;
+    chatMessage.updatedAt = new Date();
+
+    await meet.save();
+
+    res.status(200).json({ success: true, message: "Message updated", data: chatMessage });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+
+// ✅ Delete chat message by messageId (Delete)
+exports.deleteChatMessage = async (req, res) => {
+  try {
+    const { meetId, messageId } = req.params;
+
+    const meet = await VideoMeet.findById(meetId);
+    if (!meet) return res.status(404).json({ success: false, message: "Meeting not found" });
+
+    const chatMessage = meet.chat.id(messageId);
+    if (!chatMessage) return res.status(404).json({ success: false, message: "Message not found" });
+
+    chatMessage.remove();
+    await meet.save();
+
+    res.status(200).json({ success: true, message: "Message deleted" });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+
+// Toggle screen share
+exports.toggleScreenShare = async (req, res) => {
+  try {
+    const { meetId } = req.params;
+    const { isActive } = req.body;
+    const meet = await VideoMeet.findById(meetId);
+    if (!meet) return res.status(404).json({ success: false, message: "Meeting not found" });
+
+    meet.screenShareActive = isActive;
+    await meet.save();
+
+    res.status(200).json({ success: true, message: "Screen share updated", data: meet.screenShareActive });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+
+// Invite participants
+exports.inviteParticipants = async (req, res) => {
+  try {
+    const { meetId } = req.params;
+    const { userIds } = req.body;
+    if (!userIds || !Array.isArray(userIds)) return res.status(400).json({ success: false, message: "Provide an array of user IDs" });
+
+    const meet = await VideoMeet.findById(meetId);
+    if (!meet) return res.status(404).json({ success: false, message: "Meeting not found" });
+
+    userIds.forEach(id => {
+      if (!meet.participants.find(p => p.user.toString() === id)) {
+        meet.participants.push({ user: id });
       }
+    });
+    await meet.save();
+    res.status(200).json({ success: true, message: "Participants invited", data: meet.participants });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+// Add shared media (watch together) via Cloudinary
+exports.addSharedMedia = async (req, res) => {
+  try {
+    const { meetId } = req.params;
+    const { addedBy } = req.body;
+
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: "No file uploaded" });
+    }
+
+    // Upload file to Cloudinary
+    const fileUrl = await uploadImages(req.file.buffer, req.file.originalname);
+
+    // Find meeting
+    const meet = await VideoMeet.findById(meetId);
+    if (!meet) return res.status(404).json({ success: false, message: "Meeting not found" });
+
+    // Add shared media
+    meet.sharedMedia.push({
+      url: fileUrl,
+      type: req.file.mimetype.startsWith("video") ? "video" : "pdf",
+      addedBy,
+      playbackPosition: 0
+    });
+
+    await meet.save();
+
+    res.status(200).json({
+      success: true,
+      message: "Shared media added",
+      data: meet.sharedMedia
     });
 
   } catch (error) {
-    console.error("❌ Error fetching meeting:", error);
-    return res.status(500).json({ success: false, message: "Server error" });
+    console.error(error);
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
-// Update Meeting title
-exports.updateMeet = async (req, res) => {
+// Update playback position (no changes needed)
+exports.updatePlaybackPosition = async (req, res) => {
   try {
-    const meetLink = normalizeMeetLink(req.params.meetLink);
+    const { meetId, mediaId } = req.params;
+    const { position } = req.body;
 
-    const meet = await VideoMeet.findOneAndUpdate(
-      { meetLink },
-      { isActive: false, endedAt: new Date() },
-      { new: true }
-    );
-
+    const meet = await VideoMeet.findById(meetId);
     if (!meet) return res.status(404).json({ success: false, message: "Meeting not found" });
 
-    res.status(200).json({ success: true, message: "Meeting ended", data: meet });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-};
+    const media = meet.sharedMedia.id(mediaId);
+    if (!media) return res.status(404).json({ success: false, message: "Media not found" });
 
-// End Meeting
-exports.endMeeting = async (req, res) => {
-  try {
-    const { meetLink } = req.params;
-    const meet = await VideoMeet.findOneAndUpdate({ meetLink }, { isActive: false, endedAt: new Date() }, { new: true });
-    if (!meet) return res.status(404).json({ success: false, message: "Meeting not found" });
-    res.status(200).json({ success: true, message: "Meeting ended", data: meet });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-};
-
-// Add participant
-exports.addParticipant = async (req, res) => {
-  try {
-    const meetLink = normalizeMeetLink(req.params.meetLink);
-    const { userId } = req.body;
-
-    const meet = await VideoMeet.findOne({ meetLink });
-    if (!meet) return res.status(404).json({ success: false, message: "Meeting not found" });
-
-    const exists = meet.participants.find((p) => p.user.toString() === userId);
-    if (!exists) meet.participants.push({ user: userId });
-
-    await meet.save();
-    res.status(200).json({ success: true, participants: meet.participants });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-};
-
-// Remove participant
-exports.removeParticipant = async (req, res) => {
- try {
-    const meetLink = normalizeMeetLink(req.params.meetLink);
-    const { userId } = req.body;
-
-    const meet = await VideoMeet.findOne({ meetLink });
-    if (!meet) return res.status(404).json({ success: false, message: "Meeting not found" });
-
-    meet.participants = meet.participants.filter((p) => p.user.toString() !== userId);
-
-    await meet.save();
-    res.status(200).json({ success: true, participants: meet.participants });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-};
-// Pin / Unpin participant
-exports.pinParticipant = async (req, res) => {
-  try {
-    const meetLink = normalizeMeetLink(req.params.meetLink);
-    const { userId, pin } = req.body;
-
-    const meet = await VideoMeet.findOne({ meetLink });
-    if (!meet) return res.status(404).json({ success: false, message: "Meeting not found" });
-
-    const participant = meet.participants.find((p) => p.user.toString() === userId);
-    if (participant) participant.isPinned = pin;
-
-    await meet.save();
-    res.status(200).json({ success: true, participants: meet.participants });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-};
-
-// Add Chat message (with optional media)
-exports.addChatMessage = async (req, res) => {
-  try {
-    const meetLink = normalizeMeetLink(req.params.meetLink);
-    const { sender, message } = req.body;
-
-    const meet = await VideoMeet.findOne({ meetLink });
-    if (!meet) return res.status(404).json({ success: false, message: "Meeting not found" });
-
-    let mediaUrls = [];
-    if (req.files && req.files.length > 0) {
-      for (const file of req.files) {
-        const url = await uploadImages(file.buffer, file.originalname);
-        const type = file.mimetype.startsWith("image/")
-          ? "image"
-          : file.mimetype.startsWith("video/")
-          ? "video"
-          : "file";
-        mediaUrls.push({ url, type });
-      }
-    }
-
-    meet.chat.push({ sender, message, media: mediaUrls });
+    media.playbackPosition = position;
     await meet.save();
 
-    res.status(200).json({ success: true, chat: meet.chat });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-};
-
-
-// Delete chat message
-exports.deleteChatMessage = async (req, res) => {
-   try {
-    const meetLink = normalizeMeetLink(req.params.meetLink);
-    const { chatId } = req.params;
-
-    const meet = await VideoMeet.findOne({ meetLink });
-    if (!meet) return res.status(404).json({ success: false, message: "Meeting not found" });
-
-    meet.chat = meet.chat.filter((c) => c._id.toString() !== chatId);
-
-    await meet.save();
-    res.status(200).json({ success: true, chat: meet.chat });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(200).json({ success: true, message: "Playback updated", data: media });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
   }
 };

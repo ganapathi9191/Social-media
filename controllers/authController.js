@@ -280,6 +280,11 @@ exports.getUserStatistics = async (req, res) => {
 
 
 
+
+
+
+
+
 // Update user by ID
 exports.updateUserById = async (req, res) => {
   try {
@@ -454,7 +459,7 @@ exports.deleteProfile = async (req, res) => {
 
 // ------------------ PERSONAL INFO CONTROLLERS ------------------
 
-// Add or update personal info
+// post or update personal info
 exports.updatePersonalInfo = async (req, res) => {
   try {
     const { userId, birthdate, gender, country, language } = req.body;
@@ -480,22 +485,51 @@ exports.updatePersonalInfo = async (req, res) => {
   }
 };
 
-// Get personal info
-exports.getPersonalInfo = async (req, res) => {
+
+// ✅ Get All Users Personal Info
+exports.getAllPersonalInfo = async (req, res) => {
+  try {
+    const users = await Auth.find({ "accountStatus.isActive": true }).select("personalInfo");
+    res.status(200).json({ success: true, count: users.length, data: users });
+  } catch (error) {
+    res.status(500).json({ success: false, message: "Server error", error: error.message });
+  }
+};
+
+// ✅ Get Personal Info By UserId
+exports.getPersonalInfoById = async (req, res) => {
   try {
     const { userId } = req.params;
+
     if (!mongoose.Types.ObjectId.isValid(userId))
       return res.status(400).json({ success: false, message: "Invalid userId" });
 
     const user = await Auth.findById(userId).select("personalInfo");
-    if (!user || !user.personalInfo)
-      return res.status(404).json({ success: false, message: "Personal information not found" });
+    if (!user || !user.accountStatus.isActive)
+      return res.status(404).json({ success: false, message: "User not found or deactivated" });
 
-    res.status(200).json({
-      success: true,
-      message: "Personal information fetched ✅",
-      data: user.personalInfo
-    });
+    res.status(200).json({ success: true, data: user.personalInfo });
+  } catch (error) {
+    res.status(500).json({ success: false, message: "Server error", error: error.message });
+  }
+};
+
+// ✅ Delete Personal Info By UserId
+exports.deletePersonalInfoById = async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(userId))
+      return res.status(400).json({ success: false, message: "Invalid userId" });
+
+    const user = await Auth.findById(userId);
+    if (!user || !user.accountStatus.isActive)
+      return res.status(404).json({ success: false, message: "User not found or deactivated" });
+
+    user.personalInfo = undefined; // clear personal info
+    await user.save();
+
+    res.status(200).json({ success: true, message: "Personal Information deleted ❌" });
   } catch (error) {
     res.status(500).json({ success: false, message: "Server error", error: error.message });
   }

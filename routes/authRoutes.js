@@ -8,6 +8,9 @@ const followController =require("../controllers/followController");
 const postController =require('../controllers/postController');
 
 
+
+
+
 // Register user
 router.post('/register', authController.register);
 
@@ -19,6 +22,14 @@ router.post('/login', authController.login);
 
 // Verify login OTP
 router.post('/verify-login-otp', authController.verifyLoginOtp);
+
+
+
+
+
+
+
+
 
 // ------------------ USER MANAGEMENT ROUTES ------------------
 
@@ -42,6 +53,12 @@ router.delete('/users/:userId', authController.deleteUserById);
 // Search users by username or name
 router.get('/users/search', authController.searchUsers);
 
+
+
+
+
+
+
 // ------------------ PROFILE ROUTES ------------------
 
 // Create or update profile
@@ -56,24 +73,37 @@ router.get('/profiles/:userId', authController.getProfileById);
 // Delete profile
 router.delete('/profiles/:userId', authController.deleteProfile);
 
+
+
+
+
+
+
+
 // ------------------ PERSONAL INFO ROUTES ------------------
 
 // Add or update personal info
 router.post('/personal-info', authController.updatePersonalInfo);
+router.get("/personal-infos", authController.getAllPersonalInfo);
+router.get("/personal-info/:userId", authController.getPersonalInfoById);
+router.delete("/personal-info/:userId", authController.deletePersonalInfoById);
 
-// Get personal info
-router.get('/personal-info/:userId', authController.getPersonalInfo);
+
+
+
+
+
 
 // ------------------ ACCOUNT MANAGEMENT ROUTES ------------------
 
 // Deactivate account temporarily
-router.post('/deactivate', authController.deactivateAccount);
+router.post('/account/deactivate', authController.deactivateAccount);
 
 // Reactivate account
-router.post('/reactivate', authController.reactivateAccount);
+router.post('/account/reactivate', authController.reactivateAccount);
 
 // Delete account permanently
-router.post('/delete-account', authController.deleteAccount);
+router.post('/account/delete-account', authController.deleteAccount);
 
 // ------------------ PRIVACY ROUTES ------------------
 
@@ -85,42 +115,54 @@ router.get('/profile-visibility/:userId/:viewerId', authController.fetchUserProf
 
 
 
+
+
+
+
 // ------------------ FOLLOW/FOLLOWER ROUTES ------------------
 
-// Follow user
-router.post('/profile/follow', followController.followUser);
+// Send follow request
+router.post("/send-request", followController.sendFollowRequest);
+// Approve follow request
+router.post("/approve-request", followController.approveFollowRequest);
 
-// Approve follower
-router.post('/profile/approve-follower', followController.approveFollower);
+// Reject follow request
+router.post("/reject-request", followController.rejectFollowRequest);
+router.get("/followers/:userId", followController.getFollowers);
+router.get("/following/:userId", followController.getFollowing);
+router.get("/all-followers", followController.getAllFollowers);
+router.get("/all-following", followController.getAllFollowing);
 
-// Reject follower
-router.post('/profile/reject-follower', followController.rejectFollower);
 
-// Block follower
-router.post('/profile/block-follower', followController.blockFollower);
+//request
+router.get("/requests/all", followController.getAllRequests);
+router.get("/requests/:userId", followController.getRequests);
+router.get("/requests/:userId/:requesterId", followController.getRequestById);
 
-// Get followers
-router.get('/profile/followers/:userId', followController.getFollowers);
 
-// Get following
-router.get('/profile/following/:userId', followController.getFollowing);
+//block
+router.post("/block-user", followController.Blocked);
+router.get("/blocked/:userId", followController.getBlockedByUserId);
+router.get("/blocked", followController.getAllBlocked);
+router.post("/unblock", followController.unblockFollower); 
+router.delete("/unblock/:userId/:followerId", followController.unblockFollowerByParams);
+ 
 
-// Update followers (approve/reject multiple)
-router.put('/profile/followers', followController.updateFollowers);
 
-// Delete follower
-router.delete('/profile/follower', followController.deleteFollower);
+router.delete("/user/:userId/follower/:followerId", followController.removeFollower);
+router.delete("/user/:userId/following/:followingId", followController.removeFollowing);
+router.get("/status/:userId/:otherUserId", followController.getFollowStatus);
 
-// Delete following
-router.delete('/profile/following', followController.deleteFollowing);
 
-// Toggle follow/unfollow
-router.post('/profile/toggle-follow', followController.toggleFollow);
+
+
+
+
 
 // ------------------ POST ROUTES ------------------
 
 // Create a new post with mentions
-router.post('/posts', upload.array('media', 10), postController.createPost);
+router.post('/posts', upload.array('media'), postController.createPost);
 
 // Get all posts from all users
 router.get('/posts', postController.getAllPosts);
@@ -133,15 +175,20 @@ router.get('/posts/:userId/:postId', postController.getPostById);
 
 // Update post by ID
 router.put('/posts/:userId/:postId', upload.array('media', 10), postController.updatePostById);
+router.delete('/deletePost/:userId/:postId', postController.deletePost);
 
 // Like/Unlike a post
 router.post('/posts/like', postController.toggleLikePost);
+router.get("/post/:postOwnerId/:postId/likes", postController.getAllLikes);
+router.get("/post/:postOwnerId/:postId/like/:userId", postController.getLikeById);
 
 // Add comment to a post
 router.post('/posts/comment', postController.addComment);
+router.get("/:postId/comments", postController.getCommentsByPostId);
+router.get('/posts/:postId/comments/:commentId', postController.getCommentById); // Get comment by ID
+router.delete('/posts/:postId/comments/:commentId/:userId', postController.deleteCommentById);
 
-// Delete a post
-router.delete('/posts', postController.deletePost);
+
 
 // ------------------ SAVE POST ROUTES ------------------
 
@@ -150,24 +197,30 @@ router.post('/posts/save', postController.toggleSavePost);
 
 // Get Saved Posts
 router.get('/saved-posts/:userId', postController.getSavedPosts);
-
-
+router.get("/saved-posts/:userId/:postId", postController.getSavedPostById);
+// Delete a saved post
+router.delete("/saved-posts/:userId/:postId", postController.deleteSavedPost);
 
 
 
 // ------------------ NOTIFICATION ROUTES ------------------
 
+
+router.get("/mentions/:userId", notification.getMentionedComments);
 // Get all notifications for a user
 router.get('/notifications/:userId', notification.getUserNotifications);
 
 // Mark notification as read
-router.put('/notifications/read', notification.markAsRead);
+router.put('/notifications/read/:notificationId', notification.markAsRead);
 
 // Mark all notifications as read
-router.put('/notifications/read-all', notification.markAllAsRead);
+router.put('/notifications/read-all/:userId', notification.markAllAsRead);
 
 // Delete notification
-router.delete('/notifications', notification.deleteNotification);
+router.delete('/notifications/:notificationId', notification.deleteNotification);
+
+
+
 
 // 🔹 Preferences
 router.put("/preferences", notification.updateNotificationPreferences);
@@ -176,7 +229,6 @@ router.get("/preferences/:userId", notification.getNotificationPreferences);
 
 // Get unread notification count
 router.get('/notifications/unread-count/:userId', notification.getUnreadCount);
-
 // ------------------ MENTION ROUTES ------------------
 
 // Get posts where user mentioned others
@@ -221,6 +273,12 @@ router.put("/campaign/:id",upload.array("media"),campaign.updateCampaign);
 // Delete campaign by ID
 router.delete("/campaign/:id", campaign.deleteCampaign);
 
+
+router.post("/submit", campaign.submitForm);
+router.get("/all-forms", campaign.getAllFormFills);           // Get all forms
+router.get("/form/:id", campaign.getFormFillById);       // Get form by ID
+router.put("/form/:id", campaign.updateFormFillById);    // Update form by ID
+router.delete("/form/:id", campaign.deleteFormFillById); // Delete form by ID
 
 
 module.exports = router;

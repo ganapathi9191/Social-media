@@ -27,7 +27,7 @@ const messageSchema = new mongoose.Schema({
     stickerId: String,
     postId: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: 'Post'
+      ref: 'Auth.posts'
     }
   },
   isRead: {

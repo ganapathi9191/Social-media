@@ -33,6 +33,7 @@
     "firebase": "^12.2.1",
     "firebase-admin": "^13.5.0",
     "formidable": "^3.5.4",
+    "googleapis": "^160.0.0",
     "helmet": "^8.1.0",
     "i18n": "^0.15.1",
     "i18next": "^25.4.2",
