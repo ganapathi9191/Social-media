@@ -119,6 +119,7 @@ router.get('/profile-visibility/:userId/:viewerId', authController.fetchUserProf
 
 
 
+
 // ------------------ FOLLOW/FOLLOWER ROUTES ------------------
 
 // Send follow request
