@@ -504,8 +504,9 @@ exports.getPersonalInfoById = async (req, res) => {
     if (!mongoose.Types.ObjectId.isValid(userId))
       return res.status(400).json({ success: false, message: "Invalid userId" });
 
-    const user = await Auth.findById(userId).select("personalInfo");
-    if (!user || !user.accountStatus.isActive)
+    // select both personalInfo and accountStatus
+    const user = await Auth.findById(userId).select("personalInfo accountStatus");
+    if (!user || !user.accountStatus?.isActive)
       return res.status(404).json({ success: false, message: "User not found or deactivated" });
 
     res.status(200).json({ success: true, data: user.personalInfo });
