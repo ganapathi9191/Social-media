@@ -230,6 +230,10 @@ router.get("/preferences/:userId", notification.getNotificationPreferences);
 
 // Get unread notification count
 router.get('/notifications/unread-count/:userId', notification.getUnreadCount);
+
+// Route: Get all live notifications for a user
+router.get("/livenotification/:userId", notification.getLiveNotifications);
+
 // ------------------ MENTION ROUTES ------------------
 
 // Get posts where user mentioned others

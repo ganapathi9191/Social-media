@@ -23,8 +23,9 @@ router.delete("/:meetId/chat/:messageId", videoMeetController.deleteChatMessage)
 
 
 
-// Screen share toggle
-router.patch("/screenshare/:meetId", videoMeetController.toggleScreenShare);
+// Screen share routes
+router.patch("/screenshare/start/:meetId", videoMeetController.startScreenShare);
+router.patch("/screenshare/stop/:meetId", videoMeetController.stopScreenShare);
 
 // Invite participants
 router.post("/invite/:meetId", videoMeetController.inviteParticipants);

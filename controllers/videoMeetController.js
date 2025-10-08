@@ -184,18 +184,41 @@ exports.deleteChatMessage = async (req, res) => {
 };
 
 
-// Toggle screen share
-exports.toggleScreenShare = async (req, res) => {
+// Start live screen share
+exports.startScreenShare = async (req, res) => {
   try {
     const { meetId } = req.params;
-    const { isActive } = req.body;
     const meet = await VideoMeet.findById(meetId);
     if (!meet) return res.status(404).json({ success: false, message: "Meeting not found" });
 
-    meet.screenShareActive = isActive;
+    meet.screenShareActive = true;
     await meet.save();
 
-    res.status(200).json({ success: true, message: "Screen share updated", data: meet.screenShareActive });
+    // Emit event to all participants via Socket.IO
+    const io = req.app.get("io");
+    io.to(meet.meetLink).emit("screenShareStarted", { meetId });
+
+    res.status(200).json({ success: true, message: "Screen share started", data: meet.screenShareActive });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// Stop live screen share
+exports.stopScreenShare = async (req, res) => {
+  try {
+    const { meetId } = req.params;
+    const meet = await VideoMeet.findById(meetId);
+    if (!meet) return res.status(404).json({ success: false, message: "Meeting not found" });
+
+    meet.screenShareActive = false;
+    await meet.save();
+
+    // Emit event to all participants via Socket.IO
+    const io = req.app.get("io");
+    io.to(meet.meetLink).emit("screenShareStopped", { meetId });
+
+    res.status(200).json({ success: true, message: "Screen share stopped", data: meet.screenShareActive });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }

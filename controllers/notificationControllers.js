@@ -257,3 +257,74 @@ exports.getNotificationPreferences = async (req, res) => {
     res.status(500).json({ success: false, message: "Server error", error: error.message });
   }
 };
+
+// Get all live notifications for a user (mentions + unread notifications)
+exports.getLiveNotifications = async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ success: false, message: "Invalid userId" });
+    }
+
+    // 1️⃣ Fetch unread notifications
+    const notifications = await Notification.find({ recipient: userId, isRead: false })
+      .populate("sender", "fullName profile.username profile.image")
+      .sort({ createdAt: -1 });
+
+    // 2️⃣ Fetch comments where user is mentioned
+    const mentionedComments = await Auth.aggregate([
+      { $unwind: "$posts" },
+      { $unwind: "$posts.comments" },
+      {
+        $match: {
+          "posts.comments.mentions": { $elemMatch: { $eq: new mongoose.Types.ObjectId(userId) } }
+        }
+      },
+      {
+        $lookup: {
+          from: "auths",
+          localField: "posts.comments.userId",
+          foreignField: "_id",
+          as: "commentUser"
+        }
+      },
+      {
+        $lookup: {
+          from: "auths",
+          localField: "posts.comments.mentions",
+          foreignField: "_id",
+          as: "mentionedUsers"
+        }
+      },
+      {
+        $project: {
+          postId: "$posts._id",
+          postDescription: "$posts.description",
+          comment: "$posts.comments",
+          postOwner: {
+            _id: "$_id",
+            username: "$profile.username",
+            fullName: "$fullName"
+          },
+          commentUser: { $arrayElemAt: ["$commentUser", 0] },
+          mentionedUsers: 1
+        }
+      }
+    ]);
+
+    // Combine results
+    res.status(200).json({
+      success: true,
+      message: "Live notifications fetched successfully",
+      data: {
+        unreadNotifications: notifications,
+        mentionComments: mentionedComments
+      }
+    });
+
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ success: false, message: "Server error", error: error.message });
+  }
+};
