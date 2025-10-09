@@ -399,44 +399,144 @@ exports.createOrUpdateProfile = async (req, res) => {
 
 // Get all profiles
 exports.getProfiles = async (req, res) => {
-  try {
-    const users = await Auth.find({ profile: { $exists: true, $ne: null } })
-      .select("fullName email mobile profile createdAt updatedAt");
+   try {
+    const users = await Auth.find({ "accountStatus.isActive": true })
+      .select("fullName email mobile profile personalInfo accountStatus followers following posts savedPosts createdAt updatedAt")
+      .populate("followers", "_id")
+      .populate("following", "_id");
 
-    if (!users.length) return res.status(404).json({ success: false, message: "No profiles found" });
+    if (!users || users.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "No users found",
+      });
+    }
 
-    res.status(200).json({
+    // Format response with limited posts data
+    const profilesWithCounts = users.map(user => ({
+      _id: user._id,
+      fullName: user.fullName,
+      email: user.email,
+      mobile: user.mobile,
+      profile: {
+        firstName: user.profile?.firstName || "",
+        lastName: user.profile?.lastName || "",
+        username: user.profile?.username || "",
+        about: user.profile?.about || "",
+        website: user.profile?.website || "",
+        image: user.profile?.image || "",
+      },
+      counts: {
+        followers: user.followers?.length || 0,
+        following: user.following?.length || 0,
+      },
+      // Include limited posts info (first 3 posts)
+      posts: user.posts?.slice(0, 3).map(post => ({
+        _id: post._id,
+        description: post.description?.substring(0, 100) + (post.description?.length > 100 ? '...' : ''),
+        mediaCount: post.media?.length || 0,
+        likesCount: post.likes?.length || 0,
+        commentsCount: post.comments?.length || 0,
+        createdAt: post.createdAt
+      })) || [],
+      // Include savedPosts IDs or limited info
+      savedPosts: user.savedPosts?.slice(0, 5) || [], // First 5 saved posts
+      personalInfo: user.personalInfo || {},
+      accountStatus: user.accountStatus,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt,
+    }));
+
+    return res.status(200).json({
       success: true,
-      totalProfiles: users.length,
-      message: "Profiles fetched successfully ✅",
-      data: users,
+      message: "Profiles fetched successfully",
+      totalProfiles: profilesWithCounts.length,
+      data: profilesWithCounts,
     });
+
   } catch (error) {
-    res.status(500).json({ success: false, message: "Server error", error: error.message });
+    console.error("Error fetching profiles:", error.message);
+    return res.status(500).json({
+      success: false,
+      message: "Internal server error",
+      error: error.message,
+    });
   }
 };
-
 // Get single profile
 exports.getProfileById = async (req, res) => {
-  try {
+    try {
     const { userId } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(userId))
-      return res.status(400).json({ success: false, message: "Invalid userId" });
+    
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Invalid userId" 
+      });
+    }
 
-    const user = await Auth.findById(userId).select("fullName profile");
-    if (!user) return res.status(404).json({ success: false, message: "User not found" });
-    if (!user.profile) return res.status(404).json({ success: false, message: "Profile not created yet" });
+    const user = await Auth.findById(userId)
+      .select("fullName email mobile gender profile personalInfo accountStatus privacy notificationPreferences followers following posts savedPosts createdAt updatedAt")
+      .populate("followers", "fullName profile.username profile.image")
+      .populate("following", "fullName profile.username profile.image");
+
+    if (!user) {
+      return res.status(404).json({ 
+        success: false, 
+        message: "User not found" 
+      });
+    }
+
+    // Calculate counts only for followers and following
+    const followersCount = user.followers?.length || 0;
+    const followingCount = user.following?.length || 0;
+
+    // Format the response
+    const profileData = {
+      _id: user._id,
+      fullName: user.fullName,
+      email: user.email,
+      mobile: user.mobile,
+      gender: user.gender,
+      profile: {
+        firstName: user.profile?.firstName || "",
+        lastName: user.profile?.lastName || "",
+        username: user.profile?.username || "",
+        about: user.profile?.about || "",
+        website: user.profile?.website || "",
+        image: user.profile?.image || "",
+      },
+      counts: {
+        followers: followersCount,
+        following: followingCount,
+        // Don't include posts and savedPosts in counts
+      },
+      
+      posts: user.posts || [], // Show posts normally
+      savedPosts: user.savedPosts || [], // Show saved posts normally
+      personalInfo: user.personalInfo || {},
+      privacy: user.privacy || {},
+      notificationPreferences: user.notificationPreferences || {},
+      accountStatus: user.accountStatus || {},
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt,
+    };
 
     res.status(200).json({
       success: true,
       message: "Profile fetched successfully ✅",
-      data: user,
+      data: profileData,
     });
+
   } catch (error) {
-    res.status(500).json({ success: false, message: "Server error", error: error.message });
+    console.error("Error fetching profile:", error);
+    res.status(500).json({ 
+      success: false, 
+      message: "Server error", 
+      error: error.message 
+    });
   }
 };
-
 // Delete profile
 exports.deleteProfile = async (req, res) => {
   try {

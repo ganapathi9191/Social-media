@@ -231,8 +231,11 @@ router.get("/preferences/:userId", notification.getNotificationPreferences);
 // Get unread notification count
 router.get('/notifications/unread-count/:userId', notification.getUnreadCount);
 
-// Route: Get all live notifications for a user
-router.get("/livenotification/:userId", notification.getLiveNotifications);
+// Get all live notifications combined
+router.get('/notifications/all-live/:userId', notification.getAllLiveNotifications);
+// Get ONLY new/unread notifications for popup
+router.get('/popup-notifications/live/:userId', notification.getLivepopupNotifications);
+
 
 // ------------------ MENTION ROUTES ------------------
 
