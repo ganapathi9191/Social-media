@@ -709,7 +709,7 @@ exports.deleteAccount = async (req, res) => {
 
 // Update profile privacy
 exports.updateProfilePrivacy = async (req, res) => {
-  try {
+   try {
     const { userId, profileVisibility, searchEngineIndexing } = req.body;
 
     if (!userId || !mongoose.Types.ObjectId.isValid(userId))
@@ -719,18 +719,24 @@ exports.updateProfilePrivacy = async (req, res) => {
     if (!user || !user.accountStatus?.isActive)
       return res.status(404).json({ success: false, message: "User not found or deactivated" });
 
+    // Validate profileVisibility
     if (profileVisibility) {
-      if (!["public", "private"].includes(profileVisibility)) {
-        return res.status(400).json({ success: false, message: "profileVisibility must be 'public' or 'private'" });
-      }
+      if (!["public", "private"].includes(profileVisibility))
+        return res.status(400).json({
+          success: false,
+          message: "profileVisibility must be 'public' or 'private'"
+        });
       user.privacy.profileVisibility = profileVisibility;
     }
 
+    // Validate searchEngineIndexing
     if (searchEngineIndexing !== undefined) {
-      if (searchEngineIndexing !== "on" && searchEngineIndexing !== "off") {
-        return res.status(400).json({ success: false, message: "searchEngineIndexing must be 'on' or 'off'" });
-      }
-      user.privacy.searchEngineIndexing = (searchEngineIndexing === "on");
+      if (!["on", "off"].includes(searchEngineIndexing))
+        return res.status(400).json({
+          success: false,
+          message: "searchEngineIndexing must be 'on' or 'off'"
+        });
+      user.privacy.searchEngineIndexing = searchEngineIndexing === "on";
     }
 
     await user.save();
@@ -740,43 +746,102 @@ exports.updateProfilePrivacy = async (req, res) => {
       message: "Profile privacy updated ✅",
       data: user.privacy
     });
-
   } catch (error) {
-    res.status(500).json({ success: false, message: "Server error", error: error.message });
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: error.message
+    });
   }
 };
-
 // Fetch user profile considering visibility
 exports.fetchUserProfile = async (req, res) => {
-  try {
-    const { userId, viewerId } = req.params;
+   try {
+    const { viewerId, userId } = req.params;
 
-    if (!mongoose.Types.ObjectId.isValid(userId))
+    console.log("📥 Params received:", req.params);
+
+    // Validate IDs
+    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
       return res.status(400).json({ success: false, message: "Invalid userId" });
+    }
+    if (!viewerId || !mongoose.Types.ObjectId.isValid(viewerId)) {
+      return res.status(400).json({ success: false, message: "Invalid viewerId" });
+    }
 
-    const user = await Auth.findById(userId).populate("approvedFollowers", "fullName profile.username");
+    // Fetch the profile user
+    const profileUser = await Auth.findById(userId)
+      .populate("followers", "_id fullName")
+      .populate("following", "_id fullName");
 
-    if (!user) return res.status(404).json({ success: false, message: "User not found" });
+    if (!profileUser) {
+      return res.status(404).json({ success: false, message: "Profile not found" });
+    }
 
-    if (user.privacy.profileVisibility === "private") {
-      const isApproved = user.approvedFollowers.some(f => f._id.toString() === viewerId);
-      if (!isApproved) {
-        return res.status(403).json({ success: false, message: "This profile is private" });
+    // Compute friendship as mutual following
+    const isFriend = profileUser.followers.some(f => String(f._id) === viewerId) &&
+                     profileUser.following.some(f => String(f._id) === viewerId);
+
+    // Determine access
+    let canViewFull = profileUser.privacy?.profileVisibility !== "private"; // public
+
+    if (profileUser.privacy?.profileVisibility === "private") {
+      if (viewerId === String(profileUser._id)) canViewFull = true; // self
+      else if (isFriend) canViewFull = true; // friend
+      else {
+        const isFollower = profileUser.followers.some(f => String(f._id) === viewerId);
+        const isFollowing = profileUser.following.some(f => String(f._id) === viewerId);
+        canViewFull = isFollower || isFollowing;
       }
     }
 
+    // Prepare followers/following data based on friendship
+    let followersData = profileUser.followers.length;
+    let followingData = profileUser.following.length;
+
+    if (isFriend || viewerId === String(profileUser._id)) {
+      // show full list for friends or self
+      followersData = profileUser.followers.map(f => ({ _id: f._id, fullName: f.fullName }));
+      followingData = profileUser.following.map(f => ({ _id: f._id, fullName: f.fullName }));
+    }
+
+    // If access limited
+    if (!canViewFull) {
+      return res.status(200).json({
+        success: true,
+        access: "limited",
+        message: "Limited profile view (Private Account)",
+        isFriend: false,
+        data: {
+          fullName: profileUser.fullName,
+          profileVisibility: profileUser.privacy?.profileVisibility || "public",
+          followersCount: profileUser.followers.length,
+          followingCount: profileUser.following.length
+        }
+      });
+    }
+
+    // Full access
     res.status(200).json({
       success: true,
-      message: "Profile fetched successfully ✅",
-      data: user
+      access: "full",
+      message: "Full profile access",
+      isFriend: isFriend,
+      data: {
+        _id: profileUser._id,
+        fullName: profileUser.fullName,
+        email: profileUser.email,
+        followers: followersData,
+        following: followingData,
+        privacy: profileUser.privacy
+      }
     });
 
   } catch (error) {
+    console.error("❌ Error in getProfileWithPrivacy:", error.message);
     res.status(500).json({ success: false, message: "Server error", error: error.message });
   }
 };
-
-
 // ------------------ UTILITY CONTROLLERS ------------------
 
 // Check username availability

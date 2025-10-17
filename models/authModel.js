@@ -12,7 +12,7 @@ const postSchema = new mongoose.Schema({
     }
   ],
   likes: [{ type: mongoose.Schema.Types.ObjectId, ref: "Auth" }],
-   comments: [{
+  comments: [{
     userId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Auth',
@@ -66,7 +66,7 @@ const authSchema = new mongoose.Schema({
   fullName: { type: String, required: true },
   mobile: { type: String, unique: true },
   email: { type: String, unique: true },
-  gender:{type:String,unique:true},
+  gender: { type: String, unique: true },
   otpVerified: { type: Boolean, default: false },
   accountStatus: {
     isActive: { type: Boolean, default: true },
@@ -96,37 +96,39 @@ const authSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 const notificationSchema = new mongoose.Schema({
-  recipient: { 
-    type: mongoose.Schema.Types.ObjectId, 
-    ref: "Auth", 
-    required: true 
+  recipient: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Auth",
+    required: true
   },
-  sender: { 
-    type: mongoose.Schema.Types.ObjectId, 
-    ref: "Auth", 
-    required: true 
+  sender: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Auth",
+    required: true
   },
-  type: { 
-    type: String, 
-    enum: ["post", "follow", "like", "comment", "follow_request", "follow_approval", "mention"],
-    required: true 
+  type: {
+    type: String,
+    enum: ['like', 'comment', 'mention', 'post', 'follow_request', 'follow_approval', 'follow_reject', 'follow', 'message'],
+    required: true
   },
-  post: { 
-    type: mongoose.Schema.Types.ObjectId, 
-    ref: "Auth.posts" 
+  post: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Auth.posts"
   },
-  message: { 
-    type: String, 
-    required: true 
+  actionType: { type: String, enum: ['create', 'update', 'delete', 'accept', 'reject'], default: 'create' },
+  reference: {
+    postId: mongoose.Schema.Types.ObjectId,
+    commentId: mongoose.Schema.Types.ObjectId,
+    chatId: mongoose.Schema.Types.ObjectId
   },
-  isRead: { 
-    type: Boolean, 
-    default: false 
+  content: {
+    title: String,
+    description: String,
+    preview: String
   },
-  createdAt: { 
-    type: Date, 
-    default: Date.now 
-  }
+  isRead: { type: Boolean, default: false },
+  readAt: Date,
+  createdAt: { type: Date, default: Date.now, index: true }
 });
 
 // Export only Auth model

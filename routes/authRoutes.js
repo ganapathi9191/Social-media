@@ -237,6 +237,11 @@ router.get('/notifications/all-live/:userId', notification.getAllLiveNotificatio
 router.get('/popup-notifications/live/:userId', notification.getLivepopupNotifications);
 
 
+
+
+//live notifications
+router.get("/notifications/get-live/:userId", notification.getAllLiveNotifications );
+
 // ------------------ MENTION ROUTES ------------------
 
 // Get posts where user mentioned others
