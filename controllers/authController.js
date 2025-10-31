@@ -916,4 +916,70 @@ exports.getUserDashboard = async (req, res) => {
 };
 
 
+// ✅ Combined Controller — Shows all relevant friends/followers/following
+exports.getAllFriendRelations = async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ success: false, message: "Invalid userId" });
+    }
+
+    // ✅ Populate profile fields correctly
+    const user = await Auth.findById(userId)
+      .populate("followers", "fullName username email profile.image")
+      .populate("following", "fullName username email profile.image");
+
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    const followers = user.followers.map(f => f._id.toString());
+    const following = user.following.map(f => f._id.toString());
+
+    // Combine all unique users (followers + following)
+    const uniqueUserIds = [...new Set([...followers, ...following])];
+
+    // ✅ Fetch their profile details (including nested image)
+    const allUsers = await Auth.find(
+      { _id: { $in: uniqueUserIds } },
+      "fullName username email profile.image"
+    );
+
+    // Determine status for each user
+    const userRelations = allUsers.map(u => {
+      const id = u._id.toString();
+      let status = "not_friends";
+
+      if (followers.includes(id) && following.includes(id)) status = "friends";
+      else if (following.includes(id)) status = "following";
+      else if (followers.includes(id)) status = "follower";
+
+      return {
+        _id: u._id,
+        fullName: u.fullName,
+        username: u.username,
+        email: u.email,
+        image: u.profile?.image || null, // ✅ Correct path
+        status,
+      };
+    });
+
+    // ✅ Remove "not_friends" users from output
+    const filteredRelations = userRelations.filter(r => r.status !== "not_friends");
+
+    res.status(200).json({
+      success: true,
+      message: "Friends and relations fetched successfully",
+      count: filteredRelations.length,
+      data: filteredRelations,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: error.message,
+    });
+  }
+};
 

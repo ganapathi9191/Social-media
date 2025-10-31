@@ -115,7 +115,8 @@ router.get('/profile-visibility/:userId/:viewerId', authController.fetchUserProf
 
 
 
-
+// ✅ Single combined route
+router.get("/get-friends/:userId", authController.getAllFriendRelations);
 
 
 
