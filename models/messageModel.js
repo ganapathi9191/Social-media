@@ -23,7 +23,7 @@ const messageSchema = new mongoose.Schema({
   },
   content: {
     text: String,
-    mediaUrl: String,
+    mediaUrl: [String],
     stickerId: String,
     postId: {
       type: mongoose.Schema.Types.ObjectId,

@@ -1,5 +1,5 @@
 const mongoose = require('mongoose');
-const { uploadImage, uploadToCloudinary } = require('../config/cloudinary');
+const { uploadImages, uploadToCloudinary } = require('../config/cloudinary');
 const { Message, Chat } = require('../models/messageModel');
 const { Auth } = require('../models/authModel');
 
@@ -94,80 +94,57 @@ exports.getOrCreateChat = async (req, res) => {
 
 // Send message
 exports.sendMessage = async (req, res) => {
-  try {
-    const { chatId, senderId, receiverId, type, content } = req.body;
+   try {
+    const { chatId, senderId, receiverId, type, text } = req.body;
 
-    if (!chatId || !senderId || !receiverId || !type) {
-      return res.status(400).json({ success: false, message: 'Required fields missing' });
+    // ✅ Upload multiple images if type is image and files exist
+    let mediaUrls = [];
+    if (type === "image" && req.files && req.files.length > 0) {
+      const uploads = await Promise.all(
+        req.files.map(async (file) => {
+          const url = await uploadImages(file.buffer, file.originalname);
+          return url;
+        })
+      );
+      mediaUrls = uploads;
     }
 
-    // Check if users can chat
-    const canUserChat = await this.canChat(senderId, receiverId);
-    if (!canUserChat) {
-      return res.status(403).json({ 
-        success: false, 
-        message: 'You can only message approved followers' 
-      });
-    }
-
-    // Check if chat exists and user is participant
-    const chat = await Chat.findById(chatId);
-    if (!chat || !chat.participants.includes(senderId) || !chat.participants.includes(receiverId)) {
-      return res.status(404).json({ success: false, message: 'Chat not found or access denied' });
-    }
-
-    // Check if chat is blocked
-    if (chat.isBlocked) {
-      return res.status(403).json({ success: false, message: 'This chat is blocked' });
-    }
-
-    let messageData = {
+    // ✅ Create message
+    const newMessage = new Message({
       chatId,
       sender: senderId,
       receiver: receiverId,
-      type
-    };
+      type,
+      content: {
+        text: text || "",
+        mediaUrl: mediaUrls, // now stores array
+      },
+    });
 
-    // Handle different message types
-    if (type === 'text') {
-      messageData.content = { text: content.text };
-    } else if (type === 'sticker') {
-      messageData.content = { stickerId: content.stickerId };
-    } else if (type === 'post') {
-      messageData.content = { postId: content.postId };
-    } else if (['image', 'video', 'file'].includes(type)) {
-      if (!req.file) {
-        return res.status(400).json({ success: false, message: 'File is required for this message type' });
-      }
-      
-      const folderName = type === 'file' ? 'message_files' : `message_${type}s`;
-      const mediaUrl = await uploadToCloudinary(req.file.buffer, folderName, req.file.originalname);
-      messageData.content = { mediaUrl };
-    }
+    const savedMessage = await newMessage.save();
 
-    // Create message
-    const message = new Message(messageData);
-    await message.save();
+    // ✅ Update chat's last message
+    await Chat.findByIdAndUpdate(chatId, { lastMessage: savedMessage._id });
 
-    // Update chat's last message
-    chat.lastMessage = message._id;
-    await chat.save();
+    // ✅ Populate sender and receiver
+    const populatedMessage = await Message.findById(savedMessage._id)
+      .populate("sender", "fullName profile.username profile.image")
+      .populate("receiver", "fullName profile.username profile.image");
 
-    // Populate sender info
-    const populatedMessage = await Message.findById(message._id)
-      .populate('sender', 'fullName profile.username profile.image')
-      .populate('receiver', 'fullName profile.username profile.image');
-
-    res.status(201).json({
+    res.status(200).json({
       success: true,
-      message: 'Message sent successfully',
-      data: populatedMessage
+      message: "Message sent successfully",
+      data: populatedMessage,
     });
   } catch (error) {
-    res.status(500).json({ success: false, message: 'Server error', error: error.message });
+    console.error("Message Error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to send message",
+      error: error.message,
+    });
   }
 };
-
 // Get messages for a chat
 exports.getMessages = async (req, res) => {
   try {

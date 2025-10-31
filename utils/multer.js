@@ -1,12 +1,10 @@
 const multer = require('multer');
-const path = require('path');
 
-// Configure multer for memory storage
+// Use memory storage
 const storage = multer.memoryStorage();
 
-// File filter function
+// File filter
 const fileFilter = (req, file, cb) => {
-  // Allow images, videos, and files
   if (
     file.mimetype.startsWith('image/') ||
     file.mimetype.startsWith('video/') ||
@@ -20,12 +18,11 @@ const fileFilter = (req, file, cb) => {
   }
 };
 
+// Create multer instance (do NOT call .array() here)
 const upload = multer({
-  storage: storage,
-  fileFilter: fileFilter,
-  limits: {
-    fileSize: 50 * 1024 * 1024, // 50MB limit
-  }
+  storage,
+  fileFilter,
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50 MB limit
 });
 
-module.exports = upload;
+module.exports = upload;  // ✅ export multer instance

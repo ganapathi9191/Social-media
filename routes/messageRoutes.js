@@ -10,7 +10,7 @@ router.post('/chat/block', messageController.blockChat);
 router.post('/chat/unblock', messageController.unblockChat);
 
 // Message routes
-router.post('/message', upload.single('file'), messageController.sendMessage);
+router.post('/message', upload.array('file'), messageController.sendMessage);
 router.get('/messages/:chatId', messageController.getMessages);
 router.put('/messages/read', messageController.markAsRead);
 router.delete('/message', messageController.deleteMessage);
