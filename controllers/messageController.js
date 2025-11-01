@@ -97,7 +97,7 @@ exports.sendMessage = async (req, res) => {
    try {
     const { chatId, senderId, receiverId, type, text } = req.body;
 
-    // ✅ Upload multiple images if type is image and files exist
+    // Upload multiple images if type is image and files exist
     let mediaUrls = [];
     if (type === "image" && req.files && req.files.length > 0) {
       const uploads = await Promise.all(
@@ -109,27 +109,31 @@ exports.sendMessage = async (req, res) => {
       mediaUrls = uploads;
     }
 
-    // ✅ Create message
+    // Create new message
     const newMessage = new Message({
       chatId,
       sender: senderId,
       receiver: receiverId,
-      type,
+      type: type || (mediaUrls.length > 0 ? "image" : "text"),
       content: {
-        text: text || "",
-        mediaUrl: mediaUrls, // now stores array
+        text: text?.trim() || "",
+        mediaUrl: mediaUrls,
       },
     });
 
     const savedMessage = await newMessage.save();
 
-    // ✅ Update chat's last message
+    // Update chat last message
     await Chat.findByIdAndUpdate(chatId, { lastMessage: savedMessage._id });
 
-    // ✅ Populate sender and receiver
+    // Populate sender and receiver
     const populatedMessage = await Message.findById(savedMessage._id)
       .populate("sender", "fullName profile.username profile.image")
-      .populate("receiver", "fullName profile.username profile.image");
+      .populate("receiver", "fullName profile.username profile.image")
+      .lean(); // ensure we get plain JS object
+
+    // ✅ Explicitly include text in the output
+    populatedMessage.text = populatedMessage.content?.text || "";
 
     res.status(200).json({
       success: true,
