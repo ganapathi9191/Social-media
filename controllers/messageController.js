@@ -150,8 +150,12 @@ exports.getMessages = async (req, res) => {
   try {
     const { chatId, senderId, receiverId, type } = req.body;
 
-    // Parse text safely (Render may send it as undefined if multipart)
-    const text = req.body.text || req.body?.message || "";
+    // ✅ Handle both JSON and multipart body
+    const text =
+      req.body.text ||
+      req.body?.message ||
+      req.body?.content?.text ||
+      "";
 
     if (!chatId || !senderId || !receiverId) {
       return res.status(400).json({
@@ -162,22 +166,18 @@ exports.getMessages = async (req, res) => {
 
     let mediaUrls = [];
 
-    // ✅ Upload images if type === image
+    // ✅ Upload images if available
     if (type === "image" && req.files && req.files.length > 0) {
-      try {
-        const uploads = await Promise.all(
-          req.files.map(async (file) => {
-            const url = await uploadImages(file.buffer, file.originalname);
-            return url;
-          })
-        );
-        mediaUrls = uploads;
-      } catch (uploadError) {
-        console.error("Upload failed:", uploadError);
-      }
+      const uploads = await Promise.all(
+        req.files.map(async (file) => {
+          const url = await uploadImages(file.buffer, file.originalname);
+          return url;
+        })
+      );
+      mediaUrls = uploads;
     }
 
-    // ✅ Create message
+    // ✅ Create message document
     const newMessage = new Message({
       chatId,
       sender: senderId,
@@ -194,7 +194,7 @@ exports.getMessages = async (req, res) => {
     // ✅ Update chat last message
     await Chat.findByIdAndUpdate(chatId, { lastMessage: savedMessage._id });
 
-    // ✅ Populate data for response
+    // ✅ Populate sender/receiver
     const populatedMessage = await Message.findById(savedMessage._id)
       .populate("sender", "fullName profile.username profile.image")
       .populate("receiver", "fullName profile.username profile.image");
