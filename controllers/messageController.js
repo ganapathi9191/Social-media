@@ -95,9 +95,16 @@ exports.getOrCreateChat = async (req, res) => {
 // Send message
 exports.sendMessage = async (req, res) => {
    try {
-    const { chatId, senderId, receiverId, type, text } = req.body;
+    const { chatId, senderId, receiverId, type } = req.body;
 
-    // Upload multiple images if type is image and files exist
+    // ✅ Handle text safely for both JSON & form-data
+    const text =
+      req.body.text ||
+      req.body.message ||
+      req.body?.content?.text ||
+      "";
+
+    // ✅ Handle image uploads
     let mediaUrls = [];
     if (type === "image" && req.files && req.files.length > 0) {
       const uploads = await Promise.all(
@@ -109,31 +116,32 @@ exports.sendMessage = async (req, res) => {
       mediaUrls = uploads;
     }
 
-    // Create new message
+    // ✅ Create message with proper text handling
     const newMessage = new Message({
       chatId,
       sender: senderId,
       receiver: receiverId,
       type: type || (mediaUrls.length > 0 ? "image" : "text"),
       content: {
-        text: text?.trim() || "",
+        text: text.trim(),
         mediaUrl: mediaUrls,
       },
     });
 
     const savedMessage = await newMessage.save();
 
-    // Update chat last message
+    // ✅ Update chat last message
     await Chat.findByIdAndUpdate(chatId, { lastMessage: savedMessage._id });
 
-    // Populate sender and receiver
+    // ✅ Populate sender and receiver
     const populatedMessage = await Message.findById(savedMessage._id)
       .populate("sender", "fullName profile.username profile.image")
       .populate("receiver", "fullName profile.username profile.image")
-      .lean(); // ensure we get plain JS object
+      .lean();
 
-    // ✅ Explicitly include text in the output
+    // ✅ Add text and mediaUrl to top-level for cleaner output
     populatedMessage.text = populatedMessage.content?.text || "";
+    populatedMessage.mediaUrl = populatedMessage.content?.mediaUrl || [];
 
     res.status(200).json({
       success: true,
@@ -152,68 +160,49 @@ exports.sendMessage = async (req, res) => {
 // Get messages for a chat
 exports.getMessages = async (req, res) => {
   try {
-    const { chatId, senderId, receiverId, type } = req.body;
+    const { chatId } = req.params;
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const skip = (page - 1) * limit;
 
-    // ✅ Handle both JSON and multipart body
-    const text =
-      req.body.text ||
-      req.body?.message ||
-      req.body?.content?.text ||
-      "";
-
-    if (!chatId || !senderId || !receiverId) {
-      return res.status(400).json({
-        success: false,
-        message: "chatId, senderId, and receiverId are required",
-      });
-    }
-
-    let mediaUrls = [];
-
-    // ✅ Upload images if available
-    if (type === "image" && req.files && req.files.length > 0) {
-      const uploads = await Promise.all(
-        req.files.map(async (file) => {
-          const url = await uploadImages(file.buffer, file.originalname);
-          return url;
-        })
-      );
-      mediaUrls = uploads;
-    }
-
-    // ✅ Create message document
-    const newMessage = new Message({
-      chatId,
-      sender: senderId,
-      receiver: receiverId,
-      type: type || (mediaUrls.length > 0 ? "image" : "text"),
-      content: {
-        text: text.trim(),
-        mediaUrl: mediaUrls,
-      },
-    });
-
-    const savedMessage = await newMessage.save();
-
-    // ✅ Update chat last message
-    await Chat.findByIdAndUpdate(chatId, { lastMessage: savedMessage._id });
-
-    // ✅ Populate sender/receiver
-    const populatedMessage = await Message.findById(savedMessage._id)
+    const messages = await Message.find({ chatId })
       .populate("sender", "fullName profile.username profile.image")
-      .populate("receiver", "fullName profile.username profile.image");
+      .populate("receiver", "fullName profile.username profile.image")
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean(); // ✅ Convert to plain object for easy transformation
+
+    const totalMessages = await Message.countDocuments({ chatId });
+
+    // ✅ Flatten `content.text` and `content.mediaUrl` for cleaner response
+    const formattedMessages = messages.map(msg => ({
+      _id: msg._id,
+      chatId: msg.chatId,
+      sender: msg.sender,
+      receiver: msg.receiver,
+      type: msg.type,
+      text: msg.content?.text || "",       // ✅ extract text clearly
+      mediaUrl: msg.content?.mediaUrl || [],
+      isRead: msg.isRead,
+      deletedFor: msg.deletedFor,
+      createdAt: msg.createdAt,
+      updatedAt: msg.updatedAt,
+    }));
 
     res.status(200).json({
       success: true,
-      message: "Message sent successfully",
-      data: populatedMessage,
+      message: "Messages retrieved successfully",
+      data: formattedMessages,
+      page,
+      totalPages: Math.ceil(totalMessages / limit),
     });
-  } catch (error) {
-    console.error("Message Error:", error);
+  } catch (err) {
+    console.error("Get Messages Error:", err);
     res.status(500).json({
       success: false,
-      message: "Failed to send message",
-      error: error.message,
+      message: "Server error",
+      error: err.message,
     });
   }
 };
