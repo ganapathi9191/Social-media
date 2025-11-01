@@ -148,29 +148,69 @@ exports.sendMessage = async (req, res) => {
 // Get messages for a chat
 exports.getMessages = async (req, res) => {
   try {
-    const { chatId } = req.params;
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 20;
-    const skip = (page - 1) * limit;
+    const { chatId, senderId, receiverId, type } = req.body;
 
-    const messages = await Message.find({ chatId })
-      .populate("sender", "fullName profile.username profile.image")
-      .populate("receiver", "fullName profile.username profile.image")
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit);
+    // Parse text safely (Render may send it as undefined if multipart)
+    const text = req.body.text || req.body?.message || "";
 
-    const totalMessages = await Message.countDocuments({ chatId });
+    if (!chatId || !senderId || !receiverId) {
+      return res.status(400).json({
+        success: false,
+        message: "chatId, senderId, and receiverId are required",
+      });
+    }
 
-    res.json({
-      success: true,
-      message: "Messages retrieved successfully",
-      data: messages,
-      page,
-      totalPages: Math.ceil(totalMessages / limit)
+    let mediaUrls = [];
+
+    // ✅ Upload images if type === image
+    if (type === "image" && req.files && req.files.length > 0) {
+      try {
+        const uploads = await Promise.all(
+          req.files.map(async (file) => {
+            const url = await uploadImages(file.buffer, file.originalname);
+            return url;
+          })
+        );
+        mediaUrls = uploads;
+      } catch (uploadError) {
+        console.error("Upload failed:", uploadError);
+      }
+    }
+
+    // ✅ Create message
+    const newMessage = new Message({
+      chatId,
+      sender: senderId,
+      receiver: receiverId,
+      type: type || (mediaUrls.length > 0 ? "image" : "text"),
+      content: {
+        text: text.trim(),
+        mediaUrl: mediaUrls,
+      },
     });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+
+    const savedMessage = await newMessage.save();
+
+    // ✅ Update chat last message
+    await Chat.findByIdAndUpdate(chatId, { lastMessage: savedMessage._id });
+
+    // ✅ Populate data for response
+    const populatedMessage = await Message.findById(savedMessage._id)
+      .populate("sender", "fullName profile.username profile.image")
+      .populate("receiver", "fullName profile.username profile.image");
+
+    res.status(200).json({
+      success: true,
+      message: "Message sent successfully",
+      data: populatedMessage,
+    });
+  } catch (error) {
+    console.error("Message Error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to send message",
+      error: error.message,
+    });
   }
 };
 
