@@ -432,6 +432,7 @@ exports.getLastMessage = async (req, res) => {
       text: lastMessage.content?.text || "",
       mediaUrl: lastMessage.content?.mediaUrl || [],
       isRead: lastMessage.isRead,
+      deletedFor: lastMessage.deletedFor,
       createdAt: lastMessage.createdAt,
       updatedAt: lastMessage.updatedAt,
     };
@@ -443,6 +444,67 @@ exports.getLastMessage = async (req, res) => {
     });
   } catch (error) {
     console.error("Get Last Message Error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: error.message,
+    });
+  }
+};
+
+
+// Delete message for both sender and receiver (permanent delete)
+exports.deleteMessage = async (req, res) => {
+  try {
+    const { messageId, userId } = req.params;
+
+    if (!messageId || !userId) {
+      return res.status(400).json({
+        success: false,
+        message: "Message ID and User ID are required in params",
+      });
+    }
+
+    const message = await Message.findById(messageId);
+
+    if (!message) {
+      return res.status(404).json({
+        success: false,
+        message: "Message not found",
+      });
+    }
+
+    // ✅ Check if user is either sender or receiver
+    if (
+      message.sender.toString() !== userId &&
+      message.receiver.toString() !== userId
+    ) {
+      return res.status(403).json({
+        success: false,
+        message: "Not authorized to delete this message",
+      });
+    }
+
+    // ✅ Permanently delete the message (delete for both sides)
+    await Message.findByIdAndDelete(messageId);
+
+    // ✅ Optionally update Chat last message (if deleted message was last one)
+    const chat = await Chat.findById(message.chatId);
+    if (chat && chat.lastMessage?.toString() === messageId) {
+      const latestMessage = await Message.findOne({ chatId: chat._id })
+        .sort({ createdAt: -1 })
+        .select("_id");
+
+      chat.lastMessage = latestMessage ? latestMessage._id : null;
+      await chat.save();
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Message deleted for both sender and receiver",
+    });
+  } catch (error) {
+    console.error("Delete Message Error:", error);
     res.status(500).json({
       success: false,
       message: "Server error",

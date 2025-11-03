@@ -16,7 +16,7 @@ router.put('/messages/read', messageController.markAsRead);
 router.delete('/message', messageController.deleteMessage);
 router.get('/messages/unread/:userId', messageController.getUnreadCount);
 router.get("/last-message", messageController.getLastMessage);
-
+router.delete("/messages/:messageId/:userId", messageController.deleteMessage);
 
 
 module.exports = router;
