@@ -381,3 +381,73 @@ exports.getUnreadCount = async (req, res) => {
     res.status(500).json({ success: false, message: 'Server error', error: error.message });
   }
 };
+
+
+
+// Get last message between two users or in a chat
+exports.getLastMessage = async (req, res) => {
+  try {
+    const { chatId, senderId, receiverId } = req.query;
+
+    // Validate inputs
+    if (!chatId && (!senderId || !receiverId)) {
+      return res.status(400).json({
+        success: false,
+        message: "chatId or (senderId and receiverId) are required",
+      });
+    }
+
+    // Build filter
+    let filter = {};
+    if (chatId) {
+      filter.chatId = chatId;
+    } else {
+      filter.$or = [
+        { sender: senderId, receiver: receiverId },
+        { sender: receiverId, receiver: senderId },
+      ];
+    }
+
+    // Fetch the last (most recent) message
+    const lastMessage = await Message.findOne(filter)
+      .populate("sender", "fullName profile.username profile.image")
+      .populate("receiver", "fullName profile.username profile.image")
+      .sort({ createdAt: -1 })
+      .lean();
+
+    if (!lastMessage) {
+      return res.status(404).json({
+        success: false,
+        message: "No messages found between these users",
+      });
+    }
+
+    // Format output
+    const formattedMessage = {
+      _id: lastMessage._id,
+      chatId: lastMessage.chatId,
+      sender: lastMessage.sender,
+      receiver: lastMessage.receiver,
+      type: lastMessage.type,
+      text: lastMessage.content?.text || "",
+      mediaUrl: lastMessage.content?.mediaUrl || [],
+      isRead: lastMessage.isRead,
+      createdAt: lastMessage.createdAt,
+      updatedAt: lastMessage.updatedAt,
+    };
+
+    res.status(200).json({
+      success: true,
+      message: "Last message retrieved successfully",
+      data: formattedMessage,
+    });
+  } catch (error) {
+    console.error("Get Last Message Error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: error.message,
+    });
+  }
+};
+
