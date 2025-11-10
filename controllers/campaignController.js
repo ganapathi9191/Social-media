@@ -253,3 +253,24 @@ exports.deleteFormFillById = async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 };
+
+// PATCH /api/campaign/:id/status
+exports.toggleCampaignStatus = async (req, res) => {
+  try {
+    const { isActive } = req.body;
+    const campaign = await Campaign.findByIdAndUpdate(
+      req.params.id,
+      { isActive },
+      { new: true }
+    );
+    if (!campaign) return res.status(404).json({ success: false, message: "Campaign not found" });
+
+    res.status(200).json({
+      success: true,
+      message: `Campaign ${isActive ? "activated" : "deactivated"} successfully`,
+      data: campaign
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};

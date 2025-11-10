@@ -237,14 +237,19 @@ exports.getUserChats = async (req, res) => {
 // Mark messages as read
 exports.markAsRead = async (req, res) => {
   try {
-    const { messageIds, userId } = req.body;
+    const { chatId, userId } = req.body;
 
-    if (!messageIds || !Array.isArray(messageIds) || !userId) {
-      return res.status(400).json({ success: false, message: 'Message IDs array and User ID are required' });
+    // ✅ Validation
+    if (!chatId || !userId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Chat ID and User ID are required',
+      });
     }
 
-    await Message.updateMany(
-      { _id: { $in: messageIds }, receiver: userId, isRead: false },
+    // ✅ Update all unread messages in that chat for the receiver
+    const result = await Message.updateMany(
+      { chatId, receiver: userId, isRead: false },
       { 
         isRead: true,
         readAt: new Date()
@@ -253,10 +258,20 @@ exports.markAsRead = async (req, res) => {
 
     res.status(200).json({
       success: true,
-      message: 'Messages marked as read'
+      message: 'Messages marked as read successfully',
+      data: {
+        chatId,
+        userId,
+        modifiedCount: result.modifiedCount, // shows how many messages were updated
+      },
     });
   } catch (error) {
-    res.status(500).json({ success: false, message: 'Server error', error: error.message });
+    console.error("Mark As Read Error:", error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error',
+      error: error.message,
+    });
   }
 };
 

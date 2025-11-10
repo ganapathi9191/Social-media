@@ -19,7 +19,8 @@ const campaignSchema = new mongoose.Schema(
     email: { type: String, required: true },
     mobileNumber: { type: String, required: true },
     media: [mediaSchema], // remove if you don't want media
-    faqs: [faqSchema]
+    faqs: [faqSchema],
+    isActive: { type: Boolean, default: true }
   },
   { timestamps: true }
 );

@@ -109,30 +109,62 @@ exports.getAllPosts = async (req, res) => {
 // Get all posts for a specific user
 exports.getUserPosts = async (req, res) => {
   try {
-    const { userId } = req.params;
-
-    if (!mongoose.Types.ObjectId.isValid(userId)) {
-      return res.status(400).json({ success: false, message: "Invalid userId" });
-    }
-
-    const user = await Auth.findById(userId)
+    // ✅ Get all users who have posts
+    const users = await Auth.find({ "posts.0": { $exists: true } })
       .populate("posts.userId", "fullName profile.username profile.image")
       .populate("posts.comments.userId", "fullName profile.username profile.image")
       .populate("posts.mentions", "fullName profile.username profile.image")
       .select("posts");
 
-    if (!user || !user.posts || user.posts.length === 0) {
-      return res.status(404).json({ success: false, message: "No posts found for this user" });
+    // ✅ Combine all posts into one array
+    let allPosts = users.flatMap(user => user.posts);
+
+    // ✅ Sort posts by creation date (newest first)
+    allPosts.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+    // ✅ Fetch active campaigns (ads)
+    const activeCampaigns = await Campaign.find({ isActive: true });
+
+    // ✅ Mix ads after every 10 posts
+    let mixedFeed = [];
+    let adIndex = 0;
+    const adInterval = 10; // show ad after every 10 posts
+
+    for (let i = 0; i < allPosts.length; i++) {
+      mixedFeed.push({
+        type: "post",
+        data: allPosts[i]
+      });
+
+      if ((i + 1) % adInterval === 0 && adIndex < activeCampaigns.length) {
+        mixedFeed.push({
+          type: "advertisement",
+          data: activeCampaigns[adIndex]
+        });
+        adIndex++;
+      }
+    }
+
+    // ✅ If posts end but ads remain, append one more ad
+    while (adIndex < activeCampaigns.length && mixedFeed.length < allPosts.length + activeCampaigns.length) {
+      mixedFeed.push({
+        type: "advertisement",
+        data: activeCampaigns[adIndex]
+      });
+      adIndex++;
     }
 
     res.status(200).json({
       success: true,
-      message: "Posts fetched successfully ✅",
-      data: user.posts.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+      totalPosts: allPosts.length,
+      totalAdvertisements: activeCampaigns.length,
+      feedCount: mixedFeed.length,
+      data: mixedFeed
     });
 
-  } catch (error) {
-    res.status(500).json({ success: false, message: "Server error", error: error.message });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: "Server error", error: err.message });
   }
 };
 
