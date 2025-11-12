@@ -1,9 +1,83 @@
 const mongoose = require("mongoose");
-const { Auth, Notification } = require('../models/authModel');
+const { Auth, Notification, Post } = require('../models/authModel'); // ✅ Import Post
 const { Message, Chat } = require('../models/messageModel');
 
 // ===== HELPER FUNCTIONS =====
+/* -------------------------------------------------------------------------- */
+/* ✅ HELPER: ENSURE UNIQUE NOTIFICATION (Fixed to handle existing records)   */
+/* -------------------------------------------------------------------------- */
+const ensureDbNotification = async (
+  recipient,
+  sender,
+  type,
+  postId = null,
+  commentId = null,
+  message = ""
+) => {
+  try {
+    const query = { 
+      recipient, 
+      sender, 
+      type,
+      isDeleted: false 
+    };
+    
+    if (postId) query.post = postId;
+    if (commentId) query["reference.commentId"] = commentId;
 
+    // ✅ Try to find existing notification first
+    let notification = await Notification.findOne(query);
+
+    if (!notification) {
+      // ✅ Only create if it doesn't exist
+      try {
+        notification = await Notification.create({
+          recipient,
+          sender,
+          type,
+          post: postId,
+          reference: { commentId },
+          message,
+          isRead: false,
+          createdAt: new Date(),
+        });
+        console.log(`🆕 Created new notification (${type}) - ID: ${notification._id}`);
+      } catch (createError) {
+        // ✅ Handle race condition - if another request created it simultaneously
+        if (createError.code === 11000) {
+          console.log(`⚠️ Notification already exists (race condition), fetching...`);
+          notification = await Notification.findOne(query);
+        } else {
+          throw createError;
+        }
+      }
+    } else {
+      console.log(`✅ Notification already exists (${type}) - ID: ${notification._id}`);
+    }
+
+    return notification;
+  } catch (error) {
+    console.error(`❌ Error in ensureDbNotification:`, error.message);
+    throw error;
+  }
+};
+
+// ===== UTILITY FUNCTION =====
+const getDisplayMessage = (type, fullName, username) => {
+  const name = fullName || username || 'Someone';
+  const messages = {
+    like: `${name} liked your post`,
+    comment: `${name} commented on your post`,
+    follow: `${name} started following you`,
+    follow_request: `${name} requested to follow you`,
+    follow_approval: `${name} accepted your follow request`,
+    follow_reject: `${name} rejected your follow request`,
+    mention: `${name} mentioned you in a post`,
+    post: `${name} created a new post`,
+    message: `${name} sent you a message`
+  };
+  return messages[type] || 'New notification';
+};
 
 // ===== MAIN CONTROLLERS =====
 
@@ -98,8 +172,6 @@ exports.getUserNotifications = async (req, res) => {
 
     if (notifications.length === 0) {
       console.log("⚠️ No notifications found for any known field");
-      const sample = await Notification.findOne().lean();
-      console.log("🔍 Example notification structure:", sample);
       return res.status(200).json({
         success: true,
         message: "No notifications found for this user",
@@ -135,40 +207,25 @@ exports.getUserNotifications = async (req, res) => {
     });
   }
 };
+
 // Mark single notification as read
 exports.markAsRead = async (req, res) => {
- try {
+  try {
     const { notificationId } = req.params;
-    const { reference } = req.body || {};
-
-    if (notificationId && mongoose.Types.ObjectId.isValid(notificationId)) {
-      const notification = await Notification.findByIdAndUpdate(
-        notificationId,
-        { isRead: true, readAt: new Date() },
-        { new: true }
-      );
-      if (notification) {
-        return res.status(200).json({ success: true, message: "Notification marked as read", data: notification });
-      }
+    if (!mongoose.Types.ObjectId.isValid(notificationId)) {
+      return res.status(400).json({ success: false, message: "Invalid notificationId" });
     }
 
-    // fallback: try to update by reference (type + recipient + commentId/postId + sender)
-    if (reference && reference.recipient && (reference.commentId || reference.postId)) {
-      const query = { recipient: reference.recipient };
-      if (reference.commentId) query['reference.commentId'] = reference.commentId;
-      if (reference.postId) query.post = reference.postId;
-      if (reference.type) query.type = reference.type;
-      if (reference.senderId) query.sender = reference.senderId;
+    const updated = await Notification.findByIdAndUpdate(
+      notificationId,
+      { isRead: true, readAt: new Date() },
+      { new: true }
+    );
 
-      const notification = await Notification.findOneAndUpdate(query, { isRead: true, readAt: new Date() }, { new: true });
-      if (notification) {
-        return res.status(200).json({ success: true, message: "Notification marked as read", data: notification });
-      }
-    }
+    if (!updated) return res.status(404).json({ success: false, message: "Notification not found" });
 
-    return res.status(404).json({ success: false, message: "Notification not found to mark read" });
+    res.status(200).json({ success: true, message: "Notification marked as read", data: updated });
   } catch (error) {
-    console.error("❌ Error marking notification as read:", error);
     res.status(500).json({ success: false, message: "Server error", error: error.message });
   }
 };
@@ -177,113 +234,199 @@ exports.markAsRead = async (req, res) => {
 exports.markAllAsRead = async (req, res) => {
   try {
     const { userId } = req.params;
-
     if (!mongoose.Types.ObjectId.isValid(userId)) {
       return res.status(400).json({ success: false, message: "Invalid userId" });
     }
 
-    // Mark ALL unread notifications as read for this user
     const result = await Notification.updateMany(
-      { 
-        recipient: userId,
-        isRead: false 
-      },
-      { 
-        isRead: true,
-        readAt: new Date()
-      }
+      { recipient: userId, isRead: false },
+      { isRead: true, readAt: new Date() }
     );
-
-    console.log(`✅ Marked ${result.modifiedCount} notifications as read for user: ${userId}`);
 
     res.status(200).json({
       success: true,
       message: "All notifications marked as read",
+      data: { updatedCount: result.modifiedCount },
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: "Server error", error: error.message });
+  }
+};
+
+// ✅ FIXED: Delete notification AND the actual source data (like/comment/mention)
+exports.deleteNotification = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  
+  try {
+    const { notificationId } = req.params;
+    
+    if (!mongoose.Types.ObjectId.isValid(notificationId)) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ success: false, message: "Invalid notificationId" });
+    }
+
+    console.log(`🗑️ Attempting to delete notification: ${notificationId}`);
+
+    // 1️⃣ Find the notification first
+    const notification = await Notification.findById(notificationId).session(session);
+    if (!notification) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(404).json({ success: false, message: "Notification not found" });
+    }
+
+    console.log(`📋 Notification details:`, {
+      type: notification.type,
+      post: notification.post,
+      sender: notification.sender,
+      recipient: notification.recipient,
+      commentId: notification.reference?.commentId
+    });
+
+    let deletionDetails = {
+      notificationDeleted: false,
+      sourceDataDeleted: false,
+      details: ""
+    };
+
+    // 2️⃣ Delete the SOURCE DATA first (the actual like/comment/mention)
+    if (notification.type === "comment" && notification.reference?.commentId && notification.post) {
+      // Find the post owner and remove the comment
+      const result = await Auth.findOneAndUpdate(
+        { "posts._id": notification.post },
+        { 
+          $pull: { 
+            "posts.$.comments": { _id: notification.reference.commentId } 
+          } 
+        },
+        { new: true, session }
+      );
+      
+      if (result) {
+        deletionDetails.sourceDataDeleted = true;
+        deletionDetails.details = "Comment removed from post";
+        console.log(`🧹 Comment deleted from post owner's data`);
+      }
+    }
+
+    if (notification.type === "like" && notification.post && notification.sender) {
+      // Remove the like entry from the post
+      const result = await Auth.findOneAndUpdate(
+        { "posts._id": notification.post },
+        { 
+          $pull: { 
+            "posts.$.likes": { userId: notification.sender } 
+          } 
+        },
+        { new: true, session }
+      );
+      
+      if (result) {
+        deletionDetails.sourceDataDeleted = true;
+        deletionDetails.details = "Like removed from post";
+        console.log(`🧹 Like deleted from post owner's data`);
+      }
+    }
+
+    if (notification.type === "mention" && notification.post && notification.recipient) {
+      // Remove mention from the post
+      const result = await Auth.findOneAndUpdate(
+        { "posts._id": notification.post },
+        { 
+          $pull: { 
+            "posts.$.mentions": notification.recipient 
+          } 
+        },
+        { new: true, session }
+      );
+      
+      if (result) {
+        deletionDetails.sourceDataDeleted = true;
+        deletionDetails.details = "Mention removed from post";
+        console.log(`🧹 Mention deleted from post owner's data`);
+      }
+    }
+
+    if (notification.type === "follow_request" && notification.sender && notification.recipient) {
+      // Remove follow request from recipient's followerRequests array
+      const result = await Auth.findByIdAndUpdate(
+        notification.recipient,
+        { 
+          $pull: { 
+            followerRequests: notification.sender 
+          } 
+        },
+        { new: true, session }
+      );
+      
+      if (result) {
+        deletionDetails.sourceDataDeleted = true;
+        deletionDetails.details = "Follow request removed";
+        console.log(`🧹 Follow request deleted from user data`);
+      }
+    }
+
+    if (notification.type === "follow" && notification.sender && notification.recipient) {
+      // Unfollow - remove from both followers and following arrays
+      await Auth.findByIdAndUpdate(
+        notification.recipient,
+        { $pull: { followers: notification.sender } },
+        { session }
+      );
+      
+      const result = await Auth.findByIdAndUpdate(
+        notification.sender,
+        { $pull: { following: notification.recipient } },
+        { session }
+      );
+      
+      if (result) {
+        deletionDetails.sourceDataDeleted = true;
+        deletionDetails.details = "Follow relationship removed";
+        console.log(`🧹 Follow relationship deleted`);
+      }
+    }
+
+    if (notification.type === "message" && notification.reference?.chatId) {
+      // Delete the actual message
+      const messageDeleted = await Message.findByIdAndDelete(notification.reference.chatId).session(session);
+      if (messageDeleted) {
+        deletionDetails.sourceDataDeleted = true;
+        deletionDetails.details = "Message deleted";
+        console.log(`🧹 Message deleted`);
+      }
+    }
+
+    // 3️⃣ Finally, delete the notification itself
+    await Notification.findByIdAndDelete(notificationId).session(session);
+    deletionDetails.notificationDeleted = true;
+    console.log(`✅ Notification record deleted from database`);
+
+    // 4️⃣ Commit the transaction
+    await session.commitTransaction();
+    session.endSession();
+
+    res.status(200).json({
+      success: true,
+      message: "Notification and source data deleted successfully ✅",
       data: {
-        markedCount: result.modifiedCount
+        deletedNotificationId: notificationId,
+        notificationType: notification.type,
+        ...deletionDetails
       }
     });
 
   } catch (error) {
-    console.error("❌ Error in markAllAsRead:", error);
+    await session.abortTransaction();
+    session.endSession();
+    console.error("❌ Error deleting notification:", error);
     res.status(500).json({ 
       success: false, 
       message: "Server error", 
       error: error.message 
     });
-  }
-};
-
-// // Mark notifications by type as read
-// exports.markNotificationsByTypeAsRead = async (req, res) => {
-//   try {
-//     const { userId } = req.params;
-//     const { type } = req.body; // 'like', 'comment', 'follow', 'message', etc.
-
-//     if (!mongoose.Types.ObjectId.isValid(userId)) {
-//       return res.status(400).json({ success: false, message: "Invalid userId" });
-//     }
-
-//     const query = { 
-//       recipient: userId,
-//       isRead: false 
-//     };
-
-//     if (type && type !== 'all') {
-//       query.type = type;
-//     }
-
-//     const result = await Notification.updateMany(
-//       query,
-//       { 
-//         isRead: true,
-//         readAt: new Date()
-//       }
-//     );
-
-//     console.log(`✅ Marked ${result.modifiedCount} ${type || 'all'} notifications as read`);
-
-//     res.status(200).json({
-//       success: true,
-//       message: `${type || 'All'} notifications marked as read`,
-//       data: {
-//         markedCount: result.modifiedCount,
-//         type: type || 'all'
-//       }
-//     });
-
-//   } catch (error) {
-//     console.error("❌ Error marking notifications by type:", error);
-//     res.status(500).json({ 
-//       success: false, 
-//       message: "Server error", 
-//       error: error.message 
-//     });
-//   }
-// };
-
-// Delete notification
-exports.deleteNotification = async (req, res) => {
-  try {
-    const { notificationId } = req.params;
-
-    if (!mongoose.Types.ObjectId.isValid(notificationId)) {
-      return res.status(400).json({ success: false, message: "Invalid notificationId" });
-    }
-
-    const notification = await Notification.findByIdAndDelete(notificationId);
-
-    if (!notification) {
-      return res.status(404).json({ success: false, message: 'Notification not found' });
-    }
-
-    res.status(200).json({
-      success: true,
-      message: "Notification deleted successfully"
-    });
-
-  } catch (error) {
-    res.status(500).json({ success: false, message: "Server error", error: error.message });
   }
 };
 
@@ -447,289 +590,176 @@ exports.getLivepopupNotifications = async (req, res) => {
   }
 };
 
-// ===== MAIN NOTIFICATION FETCHER WITH FILTERS =====
+// ✅ FIXED: MAIN NOTIFICATION FETCHER - DON'T AUTO-CREATE, ONLY FETCH
 exports.getAllLiveNotifications = async (req, res) => {
-   try {
+  try {
     const { userId } = req.params;
-    const { 
-      limit = 50, 
-      page = 1, 
-      filter = "all", 
-      timeRange = "all" 
-    } = req.query;
+    const { limit = 50, page = 1, filter = "all" } = req.query;
 
     if (!mongoose.Types.ObjectId.isValid(userId)) {
       return res.status(400).json({ success: false, message: "Invalid userId" });
     }
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
+    console.log(`📥 Fetching notifications for user: ${userId}`);
 
-    // ---- Time filter ----
-    let startDate = new Date(0);
-    if (timeRange === "24h") startDate = new Date(Date.now() - 24 * 60 * 60 * 1000);
-    if (timeRange === "7d") startDate = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-    if (timeRange === "30d") startDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    // 1️⃣ Query base notifications
+    let query = { recipient: userId, isDeleted: { $ne: true } };
+    if (filter !== "all") query.type = filter;
 
-    console.log(`📥 Fetching notifications for user: ${userId} | Filter: ${filter}`);
-
-    // ---- Helpers ----
-    const createKey = (type, senderId, postId, commentId) =>
-      `${type}-${senderId || "null"}-${postId || "null"}-${commentId || "null"}`;
-
-    const notificationsMap = new Map();
-
-    const addNotification = (notif) => {
-      const key = createKey(
-        notif.type,
-        notif.sender?._id,
-        notif.post?._id || notif.postData?._id,
-        notif.reference?.commentId
-      );
-      if (!notificationsMap.has(key)) {
-        notificationsMap.set(key, notif);
-      }
-    };
-
-    // ---- Step 1: Load all existing notifications from DB ----
-    const dbNotifications = await Notification.find({ recipient: userId })
+    // 2️⃣ Fetch existing notifications ONLY (don't create new ones automatically)
+    const notifications = await Notification.find(query)
       .populate("sender", "fullName profile.username profile.image")
+      .populate("post", "description media")
       .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit))
       .lean();
 
-    dbNotifications.forEach((notif) => {
-      addNotification({
-        _id: notif._id,
-        type: notif.type,
-        message: notif.message,
-        sender: notif.sender,
-        post: notif.post,
-        reference: notif.reference,
-        isRead: notif.isRead,
-        createdAt: notif.createdAt,
-        source: "database"
-      });
-    });
+    console.log(`✅ Found ${notifications.length} existing notifications`);
 
-    // ---- Step 2: Fetch user + posts ----
-    const currentUser = await Auth.findById(userId)
-      .select("fullName profile followers following posts")
-      .lean();
-
-    if (!currentUser) {
-      return res.status(404).json({ success: false, message: "User not found" });
-    }
-
-    // ---- Helper: Ensure DB notification exists ----
-    const ensureDbNotification = async (recipient, sender, type, postId, commentId, message) => {
-      const query = { recipient, sender, type };
-      if (postId) query.post = postId;
-      if (commentId) query["reference.commentId"] = commentId;
-
-      let existing = await Notification.findOne(query);
-      if (!existing) {
-        existing = await Notification.create({
-          recipient,
-          sender,
-          type,
-          post: postId || null,
-          reference: { commentId: commentId || null },
-          message,
-          isRead: false
-        });
-      }
-      return existing;
-    };
-
-    // ---- Step 3: Add live likes/comments/mentions to DB if missing ----
-
-    for (const post of currentUser.posts || []) {
-      // Likes
-      for (const likerId of post.likes || []) {
-        if (likerId.toString() === userId) continue;
-        const liker = await Auth.findById(likerId).select("fullName profile").lean();
-        const msg = `${liker?.fullName || "Someone"} liked your post`;
-        const dbNotif = await ensureDbNotification(userId, likerId, "like", post._id, null, msg);
-        addNotification({
-          _id: dbNotif._id,
-          type: "like",
-          message: msg,
-          sender: liker,
-          post: { _id: post._id, description: post.description },
-          isRead: dbNotif.isRead,
-          createdAt: dbNotif.createdAt,
-          source: "database"
-        });
-      }
-
-      // Comments
-      for (const comment of post.comments || []) {
-        if (comment.userId.toString() === userId) continue;
-        const commenter = await Auth.findById(comment.userId).select("fullName profile").lean();
-        const msg = `${commenter?.fullName || "Someone"} commented on your post`;
-        const dbNotif = await ensureDbNotification(userId, comment.userId, "comment", post._id, comment._id, msg);
-        addNotification({
-          _id: dbNotif._id,
-          type: "comment",
-          message: msg,
-          sender: commenter,
-          post: { _id: post._id, description: post.description },
-          reference: { commentId: comment._id },
-          isRead: dbNotif.isRead,
-          createdAt: dbNotif.createdAt,
-          source: "database"
-        });
-      }
-
-      // Mentions in posts
-      for (const mentionId of post.mentions || []) {
-        if (mentionId.toString() !== userId) continue;
-        const msg = `${currentUser.fullName} mentioned you in a post`;
-        const dbNotif = await ensureDbNotification(userId, currentUser._id, "mention", post._id, null, msg);
-        addNotification({
-          _id: dbNotif._id,
-          type: "mention",
-          message: msg,
-          sender: currentUser,
-          post: { _id: post._id, description: post.description },
-          isRead: dbNotif.isRead,
-          createdAt: dbNotif.createdAt,
-          source: "database"
-        });
-      }
-
-      // Mentions in comments
-      for (const comment of post.comments || []) {
-        if (!comment.mentions?.some((m) => m.toString() === userId)) continue;
-        const commenter = await Auth.findById(comment.userId).select("fullName profile").lean();
-        const msg = `${commenter?.fullName || "Someone"} mentioned you in a comment`;
-        const dbNotif = await ensureDbNotification(userId, comment.userId, "mention", post._id, comment._id, msg);
-        addNotification({
-          _id: dbNotif._id,
-          type: "mention",
-          message: msg,
-          sender: commenter,
-          post: { _id: post._id, description: post.description },
-          reference: { commentId: comment._id },
-          isRead: dbNotif.isRead,
-          createdAt: dbNotif.createdAt,
-          source: "database"
-        });
-      }
-    }
-
-    // Followers
-    for (const followerId of currentUser.followers || []) {
-      const follower = await Auth.findById(followerId).select("fullName profile").lean();
-      const msg = `${follower?.fullName || "Someone"} started following you`;
-      const dbNotif = await ensureDbNotification(userId, followerId, "follow", null, null, msg);
-      addNotification({
-        _id: dbNotif._id,
-        type: "follow",
-        message: msg,
-        sender: follower,
-        isRead: dbNotif.isRead,
-        createdAt: dbNotif.createdAt,
-        source: "database"
-      });
-    }
-
-    // ---- Step 4: Sort, paginate, and respond ----
-    const allNotifications = Array.from(notificationsMap.values());
-    allNotifications.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-
-    const paginated = allNotifications.slice(skip, skip + parseInt(limit));
-
-    const counts = {
-      all: allNotifications.length,
-      unread: allNotifications.filter(n => !n.isRead).length,
-      likes: allNotifications.filter(n => n.type === "like").length,
-      comments: allNotifications.filter(n => n.type === "comment").length,
-      mentions: allNotifications.filter(n => n.type === "mention").length,
-      follows: allNotifications.filter(n => n.type === "follow").length,
-    };
+    // 3️⃣ Counts + Pagination
+    const totalCount = await Notification.countDocuments(query);
+    const unreadCount = await Notification.countDocuments({ ...query, isRead: false });
 
     res.status(200).json({
       success: true,
       message: "Notifications fetched successfully ✅",
       data: {
-        notifications: paginated,
-        counts,
+        notifications: notifications,
+        counts: { total: totalCount, unread: unreadCount },
         pagination: {
           currentPage: parseInt(page),
           limit: parseInt(limit),
-          totalPages: Math.ceil(allNotifications.length / parseInt(limit)),
-          totalNotifications: allNotifications.length,
-          hasNextPage: (skip + parseInt(limit)) < allNotifications.length,
-          hasPrevPage: parseInt(page) > 1
-        }
+          totalPages: Math.ceil(totalCount / parseInt(limit)),
+        },
       },
-      timestamp: new Date()
+      timestamp: new Date(),
+    });
+  } catch (error) {
+    console.error("❌ Error in getAllLiveNotifications:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: error.message,
+    });
+  }
+};
+
+// ✅ NEW: Manual sync endpoint - call this ONLY when you want to create notifications
+exports.syncNotificationsFromPosts = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ success: false, message: "Invalid userId" });
+    }
+
+    console.log('🔄 Starting manual notification sync for user:', userId);
+
+    const user = await Auth.findById(userId)
+      .select("posts")
+      .populate("posts.likes.userId posts.comments.userId")
+      .lean();
+
+    if (!user || !user.posts) {
+      return res.status(404).json({ success: false, message: "User or posts not found" });
+    }
+
+    let syncedCount = 0;
+    let skippedCount = 0;
+
+    for (const post of user.posts) {
+      // Sync Likes
+      if (post.likes && post.likes.length > 0) {
+        for (const like of post.likes) {
+          const senderId = like.userId?._id || like.userId || like;
+          if (senderId.toString() !== userId) {
+            try {
+              await ensureDbNotification(userId, senderId, "like", post._id, null, "liked your post");
+              syncedCount++;
+            } catch (err) {
+              if (err.code === 11000) {
+                skippedCount++;
+              } else {
+                console.error(`❌ Error syncing like notification:`, err.message);
+              }
+            }
+          }
+        }
+      }
+
+      // Sync Comments
+      if (post.comments && post.comments.length > 0) {
+        for (const comment of post.comments) {
+          const commentUserId = comment.userId?._id || comment.userId;
+          if (commentUserId && commentUserId.toString() !== userId) {
+            try {
+              await ensureDbNotification(
+                userId,
+                commentUserId,
+                "comment",
+                post._id,
+                comment._id,
+                "commented on your post"
+              );
+              syncedCount++;
+            } catch (err) {
+              if (err.code === 11000) {
+                skippedCount++;
+              } else {
+                console.error(`❌ Error syncing comment notification:`, err.message);
+              }
+            }
+          }
+        }
+      }
+
+      // Sync Mentions
+      if (post.mentions && post.mentions.length > 0) {
+        for (const mention of post.mentions) {
+          const mentionId = mention._id || mention;
+          if (mentionId.toString() === userId) {
+            try {
+              await ensureDbNotification(
+                userId,
+                post.userId,
+                "mention",
+                post._id,
+                null,
+                "mentioned you in a post"
+              );
+              syncedCount++;
+            } catch (err) {
+              if (err.code === 11000) {
+                skippedCount++;
+              } else {
+                console.error(`❌ Error syncing mention notification:`, err.message);
+              }
+            }
+          }
+        }
+      }
+    }
+
+    console.log(`✅ Sync complete - Created: ${syncedCount}, Skipped: ${skippedCount}`);
+
+    res.status(200).json({
+      success: true,
+      message: "Notifications synced successfully",
+      data: { 
+        created: syncedCount, 
+        skipped: skippedCount,
+        total: syncedCount + skippedCount
+      }
     });
 
   } catch (error) {
-    console.error("❌ Error in getAllLiveNotifications:", error);
-    res.status(500).json({ success: false, message: "Server error", error: error.message });
+    console.error("❌ Error syncing notifications:", error);
+    res.status(500).json({ 
+      success: false, 
+      message: "Server error", 
+      error: error.message 
+    });
   }
 };
-// // ===== UTILITY: SYNC LIVE DATA TO DATABASE =====
-// exports.syncLiveNotifications = async (req, res) => {
-//   try {
-//     const { userId } = req.params;
-    
-//     if (!mongoose.Types.ObjectId.isValid(userId)) {
-//       return res.status(400).json({ success: false, message: "Invalid userId" });
-//     }
-
-//     console.log('🔄 Starting notification sync...');
-
-//     const currentUser = await Auth.findById(userId).select("posts").lean();
-//     if (!currentUser) {
-//       return res.status(404).json({ success: false, message: "User not found" });
-//     }
-
-//     let syncedCount = 0;
-
-//     // Sync comments
-//     for (const post of currentUser.posts || []) {
-//       for (const comment of post.comments || []) {
-//         if (comment.userId.toString() !== userId) {
-//           const exists = await Notification.findOne({
-//             recipient: userId,
-//             sender: comment.userId,
-//             type: 'comment',
-//             'reference.commentId': comment._id
-//           });
-
-//           if (!exists) {
-//             await createNotification(
-//               userId,
-//               comment.userId,
-//               'comment',
-//               post._id,
-//               { commentId: comment._id, postId: post._id },
-//               'commented on your post',
-//               { description: comment.text?.substring(0, 100) || '' }
-//             );
-//             syncedCount++;
-//           }
-//         }
-//       }
-//     }
-
-//     console.log(`✅ Synced ${syncedCount} notifications`);
-
-//     res.status(200).json({
-//       success: true,
-//       message: "Notifications synced successfully",
-//       data: { syncedCount }
-//     });
-
-//   } catch (error) {
-//     console.error("❌ Error syncing notifications:", error);
-//     res.status(500).json({ 
-//       success: false, 
-//       message: "Server error", 
-//       error: error.message 
-//     });
-//   }
-// };
