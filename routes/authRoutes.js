@@ -237,11 +237,7 @@ router.get('/notifications/all-live/:userId', notification.getAllLiveNotificatio
 // Get ONLY new/unread notifications for popup
 router.get('/popup-notifications/live/:userId', notification.getLivepopupNotifications);
 
-
-
-
-//live notifications
-router.get("/notifications/get-live/:userId", notification.getAllLiveNotifications );
+// router.post('/sync/:userId', notificationController.syncLiveNotifications);
 
 // ------------------ MENTION ROUTES ------------------
 
