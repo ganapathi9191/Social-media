@@ -1,29 +1,30 @@
 const mongoose = require('mongoose');
-const { uploadImages, uploadToCloudinary } = require('../config/cloudinary');
+const { uploadImages } = require('../config/cloudinary');
 const { Message, Chat } = require('../models/messageModel');
 const { Auth } = require('../models/authModel');
 
-
-// Check if users can chat (must follow each other)
+/* ============================================================
+   CHECK MUTUAL FOLLOW (CAN CHAT)
+============================================================ */
 exports.canChat = async (userId, targetId) => {
   try {
     const user = await Auth.findById(userId);
     const target = await Auth.findById(targetId);
     if (!user || !target) return false;
 
-    // ✅ Chat allowed only if both follow each other
-    const isMutual =
+    return (
       user.following.includes(targetId) &&
-      target.following.includes(userId);
-
-    return isMutual;
+      target.following.includes(userId)
+    );
   } catch (error) {
     console.error("Error checking chat permission:", error);
     return false;
   }
 };
 
-// Chat route example
+/* ============================================================
+   CHAT PERMISSION ROUTE
+============================================================ */
 exports.chat = async (req, res) => {
   try {
     const { userId, targetId } = req.body;
@@ -47,7 +48,9 @@ exports.chat = async (req, res) => {
   }
 };
 
-// Get or create chat
+/* ============================================================
+   GET OR CREATE CHAT
+============================================================ */
 exports.getOrCreateChat = async (req, res) => {
   try {
     const { userId, targetId } = req.body;
@@ -56,7 +59,6 @@ exports.getOrCreateChat = async (req, res) => {
       return res.status(400).json({ success: false, message: 'User ID and Target ID are required' });
     }
 
-    // Check if users can chat
     const canUserChat = await this.canChat(userId, targetId);
     const canTargetChat = await this.canChat(targetId, userId);
 
@@ -67,17 +69,14 @@ exports.getOrCreateChat = async (req, res) => {
       });
     }
 
-    // Find existing chat
     let chat = await Chat.findOne({
       participants: { $all: [userId, targetId] }
     }).populate('participants', 'fullName profile.username profile.image');
 
-    // Create new chat if doesn't exist
     if (!chat) {
-      chat = new Chat({
-        participants: [userId, targetId]
-      });
+      chat = new Chat({ participants: [userId, targetId] });
       await chat.save();
+
       chat = await Chat.findById(chat._id)
         .populate('participants', 'fullName profile.username profile.image');
     }
@@ -87,36 +86,38 @@ exports.getOrCreateChat = async (req, res) => {
       message: 'Chat retrieved successfully',
       data: chat
     });
+
   } catch (error) {
     res.status(500).json({ success: false, message: 'Server error', error: error.message });
   }
 };
 
-// Send message
+/* ============================================================
+   SEND MESSAGE (real-time integrated)
+============================================================ */
 exports.sendMessage = async (req, res) => {
-   try {
+  try {
     const { chatId, senderId, receiverId, type } = req.body;
 
-    // ✅ Handle text safely for both JSON & form-data
+    const io = req.app.get("io"); // 🎯 Socket instance
+
     const text =
       req.body.text ||
       req.body.message ||
       req.body?.content?.text ||
       "";
 
-    // ✅ Handle image uploads
+    // Image uploads
     let mediaUrls = [];
     if (type === "image" && req.files && req.files.length > 0) {
       const uploads = await Promise.all(
         req.files.map(async (file) => {
-          const url = await uploadImages(file.buffer, file.originalname);
-          return url;
+          return await uploadImages(file.buffer, file.originalname);
         })
       );
       mediaUrls = uploads;
     }
 
-    // ✅ Create message with proper text handling
     const newMessage = new Message({
       chatId,
       sender: senderId,
@@ -130,24 +131,30 @@ exports.sendMessage = async (req, res) => {
 
     const savedMessage = await newMessage.save();
 
-    // ✅ Update chat last message
     await Chat.findByIdAndUpdate(chatId, { lastMessage: savedMessage._id });
 
-    // ✅ Populate sender and receiver
     const populatedMessage = await Message.findById(savedMessage._id)
       .populate("sender", "fullName profile.username profile.image")
       .populate("receiver", "fullName profile.username profile.image")
       .lean();
 
-    // ✅ Add text and mediaUrl to top-level for cleaner output
     populatedMessage.text = populatedMessage.content?.text || "";
     populatedMessage.mediaUrl = populatedMessage.content?.mediaUrl || [];
+
+    /* ======================================================
+       🔥 SOCKET.IO REAL-TIME EVENTS
+    ====================================================== */
+
+    io.to(chatId).emit("newMessage", populatedMessage);
+
+    io.to(receiverId).emit("messageNotification", populatedMessage);
 
     res.status(200).json({
       success: true,
       message: "Message sent successfully",
       data: populatedMessage,
     });
+
   } catch (error) {
     console.error("Message Error:", error);
     res.status(500).json({
@@ -157,7 +164,10 @@ exports.sendMessage = async (req, res) => {
     });
   }
 };
-// Get messages for a chat
+
+/* ============================================================
+   GET MESSAGES
+============================================================ */
 exports.getMessages = async (req, res) => {
   try {
     const { chatId } = req.params;
@@ -171,18 +181,17 @@ exports.getMessages = async (req, res) => {
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
-      .lean(); // ✅ Convert to plain object for easy transformation
+      .lean();
 
     const totalMessages = await Message.countDocuments({ chatId });
 
-    // ✅ Flatten `content.text` and `content.mediaUrl` for cleaner response
     const formattedMessages = messages.map(msg => ({
       _id: msg._id,
       chatId: msg.chatId,
       sender: msg.sender,
       receiver: msg.receiver,
       type: msg.type,
-      text: msg.content?.text || "",       // ✅ extract text clearly
+      text: msg.content?.text || "",
       mediaUrl: msg.content?.mediaUrl || [],
       isRead: msg.isRead,
       deletedFor: msg.deletedFor,
@@ -207,64 +216,54 @@ exports.getMessages = async (req, res) => {
   }
 };
 
-// Get user chats
+/* ============================================================
+   GET USER CHATS
+============================================================ */
 exports.getUserChats = async (req, res) => {
   try {
     const { userId } = req.params;
 
-    if (!userId) {
-      return res.status(400).json({ success: false, message: 'User ID is required' });
-    }
-
-    const chats = await Chat.find({ 
+    const chats = await Chat.find({
       participants: userId,
-      isBlocked: false 
+      isBlocked: false
     })
-    .populate('participants', 'fullName profile.username profile.image')
-    .populate('lastMessage')
-    .sort({ updatedAt: -1 });
+      .populate('participants', 'fullName profile.username profile.image')
+      .populate('lastMessage')
+      .sort({ updatedAt: -1 });
 
     res.status(200).json({
       success: true,
       message: 'Chats retrieved successfully',
       data: chats
     });
+
   } catch (error) {
     res.status(500).json({ success: false, message: 'Server error', error: error.message });
   }
 };
 
-// Mark messages as read
+/* ============================================================
+   MARK AS READ (REAL-TIME)
+============================================================ */
 exports.markAsRead = async (req, res) => {
   try {
     const { chatId, userId } = req.body;
+    const io = req.app.get("io");
 
-    // ✅ Validation
-    if (!chatId || !userId) {
-      return res.status(400).json({
-        success: false,
-        message: 'Chat ID and User ID are required',
-      });
-    }
-
-    // ✅ Update all unread messages in that chat for the receiver
     const result = await Message.updateMany(
       { chatId, receiver: userId, isRead: false },
-      { 
-        isRead: true,
-        readAt: new Date()
-      }
+      { isRead: true, readAt: new Date() }
     );
+
+    // 🔥 Real-time update
+    io.to(chatId).emit("messagesRead", { chatId, userId });
 
     res.status(200).json({
       success: true,
       message: 'Messages marked as read successfully',
-      data: {
-        chatId,
-        userId,
-        modifiedCount: result.modifiedCount, // shows how many messages were updated
-      },
+      data: { modifiedCount: result.modifiedCount },
     });
+
   } catch (error) {
     console.error("Mark As Read Error:", error);
     res.status(500).json({
@@ -275,26 +274,20 @@ exports.markAsRead = async (req, res) => {
   }
 };
 
-// Delete message
+/* ============================================================
+   DELETE FOR SINGLE USER (SOFT DELETE)
+============================================================ */
 exports.deleteMessage = async (req, res) => {
   try {
     const { messageId, userId } = req.body;
 
-    if (!messageId || !userId) {
-      return res.status(400).json({ success: false, message: 'Message ID and User ID are required' });
-    }
-
     const message = await Message.findById(messageId);
-    if (!message) {
-      return res.status(404).json({ success: false, message: 'Message not found' });
-    }
+    if (!message) return res.status(404).json({ success: false, message: 'Message not found' });
 
-    // Check if user is sender or receiver
     if (message.sender.toString() !== userId && message.receiver.toString() !== userId) {
       return res.status(403).json({ success: false, message: 'Not authorized to delete this message' });
     }
 
-    // Add user to deletedFor array (soft delete)
     if (!message.deletedFor.includes(userId)) {
       message.deletedFor.push(userId);
       await message.save();
@@ -304,83 +297,74 @@ exports.deleteMessage = async (req, res) => {
       success: true,
       message: 'Message deleted successfully'
     });
+
   } catch (error) {
     res.status(500).json({ success: false, message: 'Server error', error: error.message });
   }
 };
 
-// Block chat
+/* ============================================================
+   BLOCK CHAT (REAL-TIME)
+============================================================ */
 exports.blockChat = async (req, res) => {
   try {
     const { chatId, userId } = req.body;
-
-    if (!chatId || !userId) {
-      return res.status(400).json({ success: false, message: 'Chat ID and User ID are required' });
-    }
+    const io = req.app.get("io");
 
     const chat = await Chat.findById(chatId);
-    if (!chat) {
-      return res.status(404).json({ success: false, message: 'Chat not found' });
-    }
-
-    // Check if user is participant
-    if (!chat.participants.includes(userId)) {
-      return res.status(403).json({ success: false, message: 'Not authorized to block this chat' });
-    }
+    if (!chat) return res.status(404).json({ success: false, message: 'Chat not found' });
 
     chat.isBlocked = true;
     chat.blockedBy = userId;
     await chat.save();
 
+    // 🔥 Real-time event
+    io.to(chatId).emit("chatBlocked", { chatId, userId });
+
     res.status(200).json({
       success: true,
       message: 'Chat blocked successfully'
     });
+
   } catch (error) {
     res.status(500).json({ success: false, message: 'Server error', error: error.message });
   }
 };
 
-// Unblock chat
+/* ============================================================
+   UNBLOCK CHAT (REAL-TIME)
+============================================================ */
 exports.unblockChat = async (req, res) => {
   try {
     const { chatId, userId } = req.body;
-
-    if (!chatId || !userId) {
-      return res.status(400).json({ success: false, message: 'Chat ID and User ID are required' });
-    }
+    const io = req.app.get("io");
 
     const chat = await Chat.findById(chatId);
-    if (!chat) {
-      return res.status(404).json({ success: false, message: 'Chat not found' });
-    }
-
-    // Check if user is the one who blocked
-    if (chat.blockedBy.toString() !== userId) {
-      return res.status(403).json({ success: false, message: 'Not authorized to unblock this chat' });
-    }
+    if (!chat) return res.status(404).json({ success: false, message: 'Chat not found' });
 
     chat.isBlocked = false;
     chat.blockedBy = null;
     await chat.save();
 
+    // 🔥 Real-time event
+    io.to(chatId).emit("chatUnblocked", { chatId, userId });
+
     res.status(200).json({
       success: true,
       message: 'Chat unblocked successfully'
     });
+
   } catch (error) {
     res.status(500).json({ success: false, message: 'Server error', error: error.message });
   }
 };
 
-// Get unread message count
+/* ============================================================
+   UNREAD MESSAGE COUNT
+============================================================ */
 exports.getUnreadCount = async (req, res) => {
   try {
     const { userId } = req.params;
-
-    if (!userId) {
-      return res.status(400).json({ success: false, message: 'User ID is required' });
-    }
 
     const count = await Message.countDocuments({
       receiver: userId,
@@ -392,27 +376,19 @@ exports.getUnreadCount = async (req, res) => {
       message: 'Unread count retrieved successfully',
       data: { unreadCount: count }
     });
+
   } catch (error) {
     res.status(500).json({ success: false, message: 'Server error', error: error.message });
   }
 };
 
-
-
-// Get last message between two users or in a chat
+/* ============================================================
+   GET LAST MESSAGE BETWEEN TWO USERS
+============================================================ */
 exports.getLastMessage = async (req, res) => {
   try {
     const { chatId, senderId, receiverId } = req.query;
 
-    // Validate inputs
-    if (!chatId && (!senderId || !receiverId)) {
-      return res.status(400).json({
-        success: false,
-        message: "chatId or (senderId and receiverId) are required",
-      });
-    }
-
-    // Build filter
     let filter = {};
     if (chatId) {
       filter.chatId = chatId;
@@ -423,7 +399,6 @@ exports.getLastMessage = async (req, res) => {
       ];
     }
 
-    // Fetch the last (most recent) message
     const lastMessage = await Message.findOne(filter)
       .populate("sender", "fullName profile.username profile.image")
       .populate("receiver", "fullName profile.username profile.image")
@@ -437,7 +412,6 @@ exports.getLastMessage = async (req, res) => {
       });
     }
 
-    // Format output
     const formattedMessage = {
       _id: lastMessage._id,
       chatId: lastMessage.chatId,
@@ -457,6 +431,7 @@ exports.getLastMessage = async (req, res) => {
       message: "Last message retrieved successfully",
       data: formattedMessage,
     });
+
   } catch (error) {
     console.error("Get Last Message Error:", error);
     res.status(500).json({
@@ -467,9 +442,8 @@ exports.getLastMessage = async (req, res) => {
   }
 };
 
-
 // Delete message for both sender and receiver (permanent delete)
-exports.deleteMessage = async (req, res) => {
+exports.deletechatmessage = async (req, res) => {
   try {
     const { messageId, userId } = req.params;
 
