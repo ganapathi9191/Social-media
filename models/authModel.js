@@ -1,6 +1,6 @@
 const mongoose = require("mongoose");
 
-// ✅ Define postSchema - CLEAN VERSION
+// ✅ CORRECTED postSchema - Fixed likes structure
 const postSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: "Auth", required: true },
   description: String,
@@ -11,8 +11,13 @@ const postSchema = new mongoose.Schema({
       type: { type: String, enum: ["image", "video"], required: true }
     }
   ],
-  likes: [{ type: mongoose.Schema.Types.ObjectId, ref: "Auth" }], // ✅ Just ObjectIds
+  // ✅ FIXED: Ensure likes only contains ObjectIds
+  likes: [{ 
+    type: mongoose.Schema.Types.ObjectId, 
+    ref: "Auth" 
+  }],
   comments: [{
+    _id: { type: mongoose.Schema.Types.ObjectId, auto: true },
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'Auth', required: true },
     text: { type: String, required: true },
     createdAt: { type: Date, default: Date.now },
@@ -20,26 +25,28 @@ const postSchema = new mongoose.Schema({
   }],
   mentions: [{ type: mongoose.Schema.Types.ObjectId, ref: "Auth" }],
   createdAt: { type: Date, default: Date.now },
-})
+  updatedAt: { type: Date, default: Date.now }
+}, { _id: true });
 
 // ✅ Register Post as its own model
 const Post = mongoose.model("Post", postSchema);
 
+// ... rest of your schemas remain the same
 const profileSchema = new mongoose.Schema({
   firstName: String,
   lastName: String,
-  username: { type: String, unique: true },
+  username: { type: String, unique: true, sparse: true },
   about: String,
   website: String,
   image: String,
-});
+}, { _id: false });
 
 const personalInfoSchema = new mongoose.Schema({
   birthdate: Date,
   gender: String,
   country: String,
   language: String,
-});
+}, { _id: false });
 
 const notificationPreferencesSchema = new mongoose.Schema({
   posts: { type: Boolean, default: true },
@@ -49,12 +56,13 @@ const notificationPreferencesSchema = new mongoose.Schema({
   followRequests: { type: Boolean, default: true },
   followApprovals: { type: Boolean, default: true },
   mentions: { type: Boolean, default: true },
-});
+  messages: { type: Boolean, default: true }
+}, { _id: false });
 
 const authSchema = new mongoose.Schema({
   fullName: { type: String, required: true },
-  mobile: { type: String, unique: true },
-  email: { type: String, unique: true },
+  mobile: { type: String, unique: true, sparse: true },
+  email: { type: String, unique: true, sparse: true },
   gender: { type: String },
   otpVerified: { type: Boolean, default: false },
   accountStatus: {
@@ -81,21 +89,44 @@ const authSchema = new mongoose.Schema({
       comments: true,
       followRequests: true,
       followApprovals: true,
-      mentions: true
+      mentions: true,
+      messages: true
     })
   },
   approvedFollowers: [{ type: mongoose.Schema.Types.ObjectId, ref: "Auth" }],
   posts: [postSchema],
-}, { timestamps: true });
+}, { 
+  timestamps: true,
+  // Add validation to prevent invalid data
+  validate: {
+    validator: function(doc) {
+      // Validate that posts.likes only contains ObjectIds
+      if (doc.posts && Array.isArray(doc.posts)) {
+        for (const post of doc.posts) {
+          if (post.likes && Array.isArray(post.likes)) {
+            for (const like of post.likes) {
+              if (!mongoose.Types.ObjectId.isValid(like)) {
+                return false;
+              }
+            }
+          }
+        }
+      }
+      return true;
+    },
+    message: 'Posts likes must contain valid ObjectIds'
+  }
+});
 
 // ✅ Notification schema
 const notificationSchema = new mongoose.Schema({
-  recipient: { type: mongoose.Schema.Types.ObjectId, ref: "Auth", required: true },
-  sender: { type: mongoose.Schema.Types.ObjectId, ref: "Auth", required: true },
+  recipient: { type: mongoose.Schema.Types.ObjectId, ref: "Auth", required: true, index: true },
+  sender: { type: mongoose.Schema.Types.ObjectId, ref: "Auth", required: true, index: true },
   type: {
     type: String,
     enum: ['like', 'comment', 'mention', 'post', 'follow_request', 'follow_approval', 'follow_reject', 'follow', 'message'],
-    required: true
+    required: true,
+    index: true
   },
   post: { type: mongoose.Schema.Types.ObjectId, ref: "Post" },
   actionType: { type: String, enum: ['create', 'update', 'delete', 'accept', 'reject'], default: 'create' },
@@ -110,16 +141,17 @@ const notificationSchema = new mongoose.Schema({
     preview: String
   },
   message: String,
-  isRead: { type: Boolean, default: false },
+  isRead: { type: Boolean, default: false, index: true },
   readAt: Date,
   isDeleted: { type: Boolean, default: false },
   deletedAt: { type: Date },
   createdAt: { type: Date, default: Date.now, index: true }
-});
+}, { timestamps: true });
 
-// ✅ Indexes
+// ✅ Compound indexes for better query performance
 notificationSchema.index({ recipient: 1, isRead: 1, createdAt: -1 });
 notificationSchema.index({ recipient: 1, type: 1, createdAt: -1 });
+notificationSchema.index({ recipient: 1, sender: 1, type: 1, post: 1 }, { unique: true, sparse: true });
 
 // ✅ Export models
 const Auth = mongoose.model("Auth", authSchema);

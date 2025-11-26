@@ -113,7 +113,7 @@ const createNotification = async (recipient, sender, type, postId = null, commen
 
 // Create a new post with mentions
 exports.createPost = async (req, res) => {
-   try {
+    try {
     const { userId, description } = req.body;
     
     console.log(`🆕 Creating post for user: ${userId}`, { description });
@@ -161,8 +161,14 @@ exports.createPost = async (req, res) => {
       mentions: mentions,
       likes: [],
       comments: [],
-      createdAt: new Date()
+      createdAt: new Date(),
+      updatedAt: new Date()
     };
+
+    // Initialize posts array if it doesn't exist
+    if (!user.posts) {
+      user.posts = [];
+    }
 
     user.posts.push(newPost);
     await user.save();
@@ -170,7 +176,7 @@ exports.createPost = async (req, res) => {
     const createdPost = user.posts[user.posts.length - 1];
     console.log(`✅ Post created with ID:`, createdPost._id);
 
-    // 🔥 AUTOMATICALLY CREATE NOTIFICATIONS FOR FOLLOWERS
+    // 🔥 FIXED: AUTOMATICALLY CREATE NOTIFICATIONS FOR FOLLOWERS
     if (Array.isArray(user.followers) && user.followers.length > 0) {
       console.log(`📢 Notifying ${user.followers.length} followers`);
       
@@ -178,6 +184,7 @@ exports.createPost = async (req, res) => {
         try {
           console.log(`👥 Creating notification for follower: ${followerId}`);
           
+          // Use the createNotification function directly
           const notification = await createNotification(
             followerId.toString(), 
             userId, 
@@ -187,24 +194,24 @@ exports.createPost = async (req, res) => {
             `${user.fullName} created a new post`, 
             { 
               allowSelf: false, 
-              checkPreferences: true
+              checkPreferences: true 
             }
           );
           
           if (notification) {
-            console.log(`✅ Notification created for follower ${followerId}:`, notification._id);
+            console.log(`✅ Post notification created for follower ${followerId}:`, notification._id);
           } else {
-            console.log(`❌ Failed to create notification for follower ${followerId}`);
+            console.log(`❌ Failed to create post notification for follower ${followerId}`);
           }
         } catch (error) {
-          console.error(`🚨 Error creating notification for follower ${followerId}:`, error.message);
+          console.error(`🚨 Error creating post notification for follower ${followerId}:`, error.message);
         }
       }
     } else {
-      console.log(`ℹ️ No followers to notify`);
+      console.log(`ℹ️ No followers to notify for post`);
     }
 
-    // 🔥 AUTOMATICALLY CREATE NOTIFICATIONS FOR MENTIONED USERS
+    // 🔥 FIXED: AUTOMATICALLY CREATE NOTIFICATIONS FOR MENTIONED USERS
     if (mentions.length > 0) {
       console.log(`🔔 Notifying ${mentions.length} mentioned users`);
       
@@ -224,7 +231,7 @@ exports.createPost = async (req, res) => {
             `${user.fullName} mentioned you in a post`, 
             { 
               allowSelf: true, 
-              checkPreferences: true
+              checkPreferences: true 
             }
           );
           
@@ -448,6 +455,8 @@ exports.toggleLikePost = async (req, res) => {
   try {
     const { postId, userId, postOwnerId } = req.body;
     
+    console.log(`❤️ Toggle like:`, { postId, userId, postOwnerId });
+    
     // Validation
     if (!postId || !userId || !postOwnerId) {
       return res.status(400).json({ 
@@ -467,6 +476,7 @@ exports.toggleLikePost = async (req, res) => {
 
     const userObjectId = new mongoose.Types.ObjectId(userId);
     const postOwnerObjectId = new mongoose.Types.ObjectId(postOwnerId);
+    const postObjectId = new mongoose.Types.ObjectId(postId);
 
     // Find post owner and post
     const postOwner = await Auth.findById(postOwnerObjectId);
@@ -478,7 +488,7 @@ exports.toggleLikePost = async (req, res) => {
     }
 
     // Find the specific post
-    const post = postOwner.posts.id(postId);
+    const post = postOwner.posts.id(postObjectId);
     if (!post) {
       return res.status(404).json({ 
         success: false, 
@@ -486,57 +496,93 @@ exports.toggleLikePost = async (req, res) => {
       });
     }
 
+    // ✅ FIXED: Ensure likes array exists and is clean
+    if (!post.likes || !Array.isArray(post.likes)) {
+      post.likes = [];
+    }
+
+    // Clean the likes array before processing
+    post.likes = post.likes.filter(like => 
+      like && mongoose.Types.ObjectId.isValid(like)
+    ).map(like => new mongoose.Types.ObjectId(like));
+
     const alreadyLiked = post.likes.some(likeId => 
-      String(likeId) === String(userId)
+      likeId.toString() === userObjectId.toString()
     );
+
+    console.log(`Current likes:`, post.likes.length);
+    console.log(`Already liked:`, alreadyLiked);
 
     if (alreadyLiked) {
       // Unlike the post
-      post.likes.pull(userObjectId);
+      post.likes = post.likes.filter(likeId => 
+        likeId.toString() !== userObjectId.toString()
+      );
+      
+      postOwner.markModified('posts');
       await postOwner.save();
 
+      console.log(`✅ Post unliked. New likes count:`, post.likes.length);
+
       // Delete like notification
-      await Notification.findOneAndDelete({
-        recipient: postOwnerObjectId,
-        sender: userObjectId,
-        type: "like",
-        post: new mongoose.Types.ObjectId(postId)
-      });
+      try {
+        await Notification.findOneAndDelete({
+          recipient: postOwnerObjectId,
+          sender: userObjectId,
+          type: "like",
+          post: postObjectId
+        });
+        console.log(`🔕 Like notification deleted`);
+      } catch (notifError) {
+        console.warn(`Warning: Could not delete notification:`, notifError.message);
+      }
 
       return res.status(200).json({ 
         success: true, 
         message: "Post unliked ✅", 
         likesCount: post.likes.length, 
-        likes: post.likes,
         liked: false
       });
     } else {
       // Like the post
       post.likes.push(userObjectId);
+      
+      postOwner.markModified('posts');
       await postOwner.save();
 
-      // Create notification
-      const user = await Auth.findById(userObjectId).select("fullName profile.username");
-      await createNotification(
-        postOwnerId, 
-        userId, 
-        "like", 
-        postId, 
-        null, 
-        `${user?.fullName || user?.profile?.username || "Someone"} liked your post`, 
-        { allowSelf: true, checkPreferences: false }
-      );
+      console.log(`✅ Post liked. New likes count:`, post.likes.length);
+
+      // Create notification (skip if liking own post)
+      if (postOwnerObjectId.toString() !== userObjectId.toString()) {
+        try {
+          const user = await Auth.findById(userObjectId).select("fullName profile.username");
+          const notification = await createNotification(
+            postOwnerId, 
+            userId, 
+            "like", 
+            postId, 
+            null, 
+            `${user?.fullName || user?.profile?.username || "Someone"} liked your post`, 
+            { allowSelf: false, checkPreferences: true }
+          );
+          
+          if (notification) {
+            console.log(`✅ Like notification created:`, notification._id);
+          }
+        } catch (notifError) {
+          console.warn(`Warning: Could not create notification:`, notifError.message);
+        }
+      }
 
       return res.status(200).json({ 
         success: true, 
         message: "Post liked ✅", 
         likesCount: post.likes.length, 
-        likes: post.likes,
         liked: true
       });
     }
   } catch (err) {
-    console.error("toggleLikePost error:", err);
+    console.error("❌ toggleLikePost error:", err);
     res.status(500).json({ 
       success: false, 
       message: "Server error", 
@@ -544,7 +590,6 @@ exports.toggleLikePost = async (req, res) => {
     });
   }
 };
-
 // ✅ Get All Likes for a Post
 exports.getAllLikes = async (req, res) => {
   try {
@@ -592,7 +637,7 @@ exports.getLikeById = async (req, res) => {
 
 // Add comment to a post with mentions
 exports.addComment = async (req, res) => {
-     try {
+    try {
     const { userId, postId, text } = req.body;
     
     console.log(`💬 Comment action:`, { userId, postId, text });
@@ -633,12 +678,14 @@ exports.addComment = async (req, res) => {
 
     console.log(`✅ Comment added by ${commenter?.fullName}`);
 
-    // 🔥 AUTOMATICALLY CREATE NOTIFICATION FOR POST OWNER
+    // 🔥 FIXED: AUTOMATICALLY CREATE NOTIFICATION FOR POST OWNER
     // Only create notification if commenter is not the post owner
     if (String(postOwner._id) !== String(userId)) {
       try {
+        console.log(`📝 Creating comment notification for post owner: ${postOwner._id}`);
+        
         const notification = await createNotification(
-          postOwner._id,
+          postOwner._id.toString(),
           userId,
           "comment",
           postId,
@@ -649,13 +696,15 @@ exports.addComment = async (req, res) => {
         
         if (notification) {
           console.log(`✅ Comment notification created for post owner:`, notification._id);
+        } else {
+          console.log(`❌ Failed to create comment notification for post owner`);
         }
       } catch (error) {
         console.error(`🚨 Error creating comment notification:`, error.message);
       }
     }
 
-    // 🔥 AUTOMATICALLY CREATE NOTIFICATIONS FOR MENTIONED USERS IN COMMENT
+    // 🔥 FIXED: AUTOMATICALLY CREATE NOTIFICATIONS FOR MENTIONED USERS IN COMMENT
     if (mentions.length > 0) {
       console.log(`🔔 Notifying ${mentions.length} mentioned users in comment`);
       
@@ -663,6 +712,8 @@ exports.addComment = async (req, res) => {
         try {
           // Skip if user mentioned themselves
           if (mId.toString() === userId) continue;
+          
+          console.log(`📍 Creating comment mention notification for user: ${mId}`);
           
           const notification = await createNotification(
             mId.toString(),
@@ -676,6 +727,8 @@ exports.addComment = async (req, res) => {
           
           if (notification) {
             console.log(`✅ Comment mention notification created for user ${mId}:`, notification._id);
+          } else {
+            console.log(`❌ Failed to create comment mention notification for user ${mId}`);
           }
         } catch (error) {
           console.error(`🚨 Error creating comment mention notification:`, error.message);

@@ -14,6 +14,7 @@ const toObjectId = (id) => {
   }
 };
 
+// FIXED createNotification function - Add this to your notificationControllers.js
 const createNotification = async (recipient, sender, type, postId = null, commentId = null, message = "", options = {}) => {
   try {
     const { allowSelf = true, checkPreferences = false } = options;
@@ -26,6 +27,7 @@ const createNotification = async (recipient, sender, type, postId = null, commen
       message 
     });
 
+    // Validate inputs
     if (!recipient || !sender) {
       console.warn("createNotification: missing recipient or sender");
       return null;
@@ -69,6 +71,7 @@ const createNotification = async (recipient, sender, type, postId = null, commen
       }
     }
 
+    // Create notification payload
     const payload = {
       recipient: recipientId,
       sender: senderId,
@@ -79,13 +82,23 @@ const createNotification = async (recipient, sender, type, postId = null, commen
       createdAt: new Date()
     };
 
-    if (postId) payload.post = toObjectId(postId);
-    if (commentId) payload.reference = { commentId: toObjectId(commentId) };
+    // Add post reference if provided
+    if (postId) {
+      payload.post = toObjectId(postId);
+    }
 
+    // Add comment reference if provided
+    if (commentId) {
+      payload.reference = { commentId: toObjectId(commentId) };
+    }
+
+    console.log(`📝 Notification payload:`, payload);
+
+    // Create the notification
     const notification = await Notification.create(payload);
     console.log(`✅ Notification created:`, notification._id);
 
-    // emit real-time if socket exists
+    // Emit real-time notification if socket exists
     const io = global.io;
     if (io) {
       try {
@@ -106,7 +119,7 @@ const createNotification = async (recipient, sender, type, postId = null, commen
       console.warn("createNotification: duplicate prevented (11000).");
       return null;
     }
-    console.error("createNotification error:", error);
+    console.error("❌ createNotification error:", error);
     return null;
   }
 };
@@ -680,7 +693,7 @@ exports.getAllLiveNotifications = async (req, res) => {
     const { userId } = req.params;
     const { 
       page = 1, 
-      limit = 50, 
+      limit = 100, // Increased limit to show more
       type, 
       unreadOnly = false
     } = req.query;
@@ -696,27 +709,15 @@ exports.getAllLiveNotifications = async (req, res) => {
 
     const userObjectId = new mongoose.Types.ObjectId(userId);
 
-    // Build query for notifications
+    // ✅ STEP 1: GET ALL DATABASE NOTIFICATIONS
     const query = {
       recipient: userObjectId,
       isDeleted: { $ne: true }
     };
 
-    // Filter by type if provided
-    if (type && type !== 'all') {
-      query.type = type;
-    }
+    if (type && type !== 'all') query.type = type;
+    if (unreadOnly === 'true') query.isRead = false;
 
-    // Filter by read status
-    if (unreadOnly === 'true') {
-      query.isRead = false;
-    }
-
-    // Calculate pagination
-    const skip = (parseInt(page) - 1) * parseInt(limit);
-    const limitNum = parseInt(limit);
-
-    // Get ALL notifications first
     const allNotifications = await Notification.find(query)
       .sort({ createdAt: -1 })
       .populate("sender", "fullName email mobile gender profile")
@@ -727,11 +728,12 @@ exports.getAllLiveNotifications = async (req, res) => {
           select: "username image firstName lastName about website"
         }
       })
+      .populate("post", "description media userId createdAt")
       .lean();
 
-    console.log(`✅ FOUND ${allNotifications.length} NOTIFICATIONS for user ${userId}`);
+    console.log(`✅ DATABASE NOTIFICATIONS: ${allNotifications.length}`);
 
-    // GET LIVE MESSAGES (unread messages as notifications)
+    // ✅ STEP 2: GET UNREAD MESSAGES AS NOTIFICATIONS
     const unreadMessages = await Message.find({
       receiver: userObjectId,
       isRead: false
@@ -744,13 +746,252 @@ exports.getAllLiveNotifications = async (req, res) => {
         select: "username image firstName lastName about website"
       }
     })
-    .populate("receiver", "fullName profile")
     .sort({ createdAt: -1 })
     .lean();
 
-    console.log(`💬 FOUND ${unreadMessages.length} UNREAD MESSAGES for user ${userId}`);
+    console.log(`💬 UNREAD MESSAGES: ${unreadMessages.length}`);
 
-    // Convert messages to notification format
+    // ✅ STEP 3: GET PENDING FOLLOW REQUESTS AS NOTIFICATIONS
+    const currentUser = await Auth.findById(userId)
+      .populate({
+        path: 'followerRequests',
+        select: 'fullName email mobile gender profile createdAt'
+      })
+      .lean();
+
+    // Populate profile details
+    if (currentUser?.followerRequests?.length > 0) {
+      await Auth.populate(currentUser.followerRequests, {
+        path: 'profile',
+        select: 'username image firstName lastName about website'
+      });
+    }
+
+    const followRequestNotifications = currentUser?.followerRequests?.map(requester => ({
+      _id: new mongoose.Types.ObjectId(),
+      type: 'follow_request',
+      message: `${requester.fullName || 'Someone'} sent you a follow request`,
+      createdAt: requester.createdAt || new Date(),
+      isRead: false,
+      readAt: null,
+      sender: requester,
+      reference: {
+        requesterId: requester._id,
+        userId: userId
+      },
+      metadata: {
+        isActionable: true,
+        requiresResponse: true,
+        canViewPost: false,
+        priority: 'high',
+        hasPost: false,
+        hasComment: false,
+        isMessage: false,
+        isFollowRequest: true
+      },
+      isFollowRequest: true
+    })) || [];
+
+    console.log(`👥 FOLLOW REQUESTS: ${followRequestNotifications.length}`);
+
+    // ✅ STEP 4: GET USER'S POSTS DATA FOR AUTO-GENERATING MISSING NOTIFICATIONS
+    const userWithPosts = await Auth.findById(userId)
+      .select("fullName posts followers following")
+      .populate("followers", "fullName")
+      .populate("following", "fullName")
+      .lean();
+
+    // ✅ STEP 5: AUTO-CREATE MISSING NOTIFICATIONS IN REAL-TIME
+    const autoCreatedNotifications = [];
+
+    if (userWithPosts && userWithPosts.posts) {
+      console.log(`📝 AUTO-CREATING NOTIFICATIONS FOR ${userWithPosts.posts.length} POSTS`);
+
+      for (const post of userWithPosts.posts) {
+        // A. Create POST notifications for followers (if any)
+        if (userWithPosts.followers && userWithPosts.followers.length > 0) {
+          for (const follower of userWithPosts.followers) {
+            const postNotifExists = allNotifications.find(n => 
+              n.type === 'post' && 
+              n.post && n.post._id.toString() === post._id.toString() &&
+              n.sender && n.sender._id.toString() === userWithPosts._id.toString() &&
+              n.recipient.toString() === follower._id.toString()
+            );
+
+            if (!postNotifExists) {
+              autoCreatedNotifications.push({
+                _id: new mongoose.Types.ObjectId(),
+                type: 'post',
+                message: `${userWithPosts.fullName} created a new post`,
+                createdAt: post.createdAt,
+                isRead: false,
+                sender: {
+                  _id: userWithPosts._id,
+                  fullName: userWithPosts.fullName,
+                  profile: userWithPosts.profile
+                },
+                post: {
+                  _id: post._id,
+                  description: post.description,
+                  media: post.media || [],
+                  userId: userWithPosts._id
+                },
+                metadata: {
+                  isActionable: false,
+                  requiresResponse: false,
+                  canViewPost: true,
+                  priority: 'normal',
+                  hasPost: true,
+                  hasComment: false,
+                  isMessage: false,
+                  isAutoCreated: true
+                },
+                isAutoCreated: true
+              });
+            }
+          }
+        }
+
+        // B. Create COMMENT notifications (if any comments exist)
+        if (post.comments && post.comments.length > 0) {
+          for (const comment of post.comments) {
+            const commentNotifExists = allNotifications.find(n => 
+              n.type === 'comment' && 
+              n.post && n.post._id.toString() === post._id.toString() &&
+              n.reference && n.reference.commentId && n.reference.commentId.toString() === comment._id.toString()
+            );
+
+            if (!commentNotifExists && comment.userId.toString() !== userWithPosts._id.toString()) {
+              const commenter = await Auth.findById(comment.userId).select("fullName profile").lean();
+              autoCreatedNotifications.push({
+                _id: new mongoose.Types.ObjectId(),
+                type: 'comment',
+                message: `${commenter?.fullName || 'Someone'} commented on your post: "${comment.text?.substring(0, 30)}${comment.text?.length > 30 ? '...' : ''}"`,
+                createdAt: comment.createdAt,
+                isRead: false,
+                sender: commenter ? {
+                  _id: commenter._id,
+                  fullName: commenter.fullName,
+                  profile: commenter.profile
+                } : null,
+                post: {
+                  _id: post._id,
+                  description: post.description,
+                  media: post.media || [],
+                  userId: userWithPosts._id
+                },
+                reference: {
+                  commentId: comment._id
+                },
+                metadata: {
+                  isActionable: true,
+                  requiresResponse: false,
+                  canViewPost: true,
+                  priority: 'normal',
+                  hasPost: true,
+                  hasComment: true,
+                  isMessage: false,
+                  isAutoCreated: true
+                },
+                isAutoCreated: true
+              });
+            }
+          }
+        }
+
+        // C. Create MENTION notifications (if any mentions exist)
+        if (post.mentions && post.mentions.length > 0) {
+          for (const mentionedUserId of post.mentions) {
+            const mentionNotifExists = allNotifications.find(n => 
+              n.type === 'mention' && 
+              n.post && n.post._id.toString() === post._id.toString() &&
+              n.recipient.toString() === mentionedUserId.toString()
+            );
+
+            if (!mentionNotifExists && mentionedUserId.toString() !== userWithPosts._id.toString()) {
+              const mentionedUser = await Auth.findById(mentionedUserId).select("fullName profile").lean();
+              autoCreatedNotifications.push({
+                _id: new mongoose.Types.ObjectId(),
+                type: 'mention',
+                message: `${userWithPosts.fullName} mentioned you in a post: "${post.description?.substring(0, 30)}${post.description?.length > 30 ? '...' : ''}"`,
+                createdAt: post.createdAt,
+                isRead: false,
+                sender: {
+                  _id: userWithPosts._id,
+                  fullName: userWithPosts.fullName,
+                  profile: userWithPosts.profile
+                },
+                post: {
+                  _id: post._id,
+                  description: post.description,
+                  media: post.media || [],
+                  userId: userWithPosts._id
+                },
+                metadata: {
+                  isActionable: true,
+                  requiresResponse: false,
+                  canViewPost: true,
+                  priority: 'normal',
+                  hasPost: true,
+                  hasComment: false,
+                  isMessage: false,
+                  isAutoCreated: true
+                },
+                isAutoCreated: true
+              });
+            }
+          }
+        }
+
+        // D. Create LIKE notifications (if any likes exist)
+        if (post.likes && post.likes.length > 0) {
+          for (const likerId of post.likes) {
+            const likeNotifExists = allNotifications.find(n => 
+              n.type === 'like' && 
+              n.post && n.post._id.toString() === post._id.toString() &&
+              n.sender && n.sender._id.toString() === likerId.toString()
+            );
+
+            if (!likeNotifExists && likerId.toString() !== userWithPosts._id.toString()) {
+              const liker = await Auth.findById(likerId).select("fullName profile").lean();
+              autoCreatedNotifications.push({
+                _id: new mongoose.Types.ObjectId(),
+                type: 'like',
+                message: `${liker?.fullName || 'Someone'} liked your post`,
+                createdAt: post.updatedAt, // Use post update time for likes
+                isRead: false,
+                sender: liker ? {
+                  _id: liker._id,
+                  fullName: liker.fullName,
+                  profile: liker.profile
+                } : null,
+                post: {
+                  _id: post._id,
+                  description: post.description,
+                  media: post.media || [],
+                  userId: userWithPosts._id
+                },
+                metadata: {
+                  isActionable: true,
+                  requiresResponse: false,
+                  canViewPost: true,
+                  priority: 'normal',
+                  hasPost: true,
+                  hasComment: false,
+                  isMessage: false,
+                  isAutoCreated: true
+                },
+                isAutoCreated: true
+              });
+            }
+          }
+        }
+      }
+    }
+
+    console.log(`🤖 AUTO-CREATED NOTIFICATIONS: ${autoCreatedNotifications.length}`);
+
+    // ✅ STEP 6: CONVERT MESSAGES TO NOTIFICATION FORMAT
     const messageNotifications = unreadMessages.map(message => ({
       _id: message._id,
       type: 'message',
@@ -770,10 +1011,8 @@ exports.getAllLiveNotifications = async (req, res) => {
         priority: 'high',
         hasPost: false,
         hasComment: false,
-        isMessage: true,
-        isLatestNotification: false
+        isMessage: true
       },
-      // Mark as message for easy identification
       isMessage: true,
       messageData: {
         text: message.content?.text,
@@ -783,352 +1022,42 @@ exports.getAllLiveNotifications = async (req, res) => {
       }
     }));
 
-    // COMBINE NOTIFICATIONS AND MESSAGES
-    const allItems = [...allNotifications, ...messageNotifications];
-    
-    // Sort combined items by createdAt (newest first)
-    allItems.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-
-    console.log(`📊 TOTAL ITEMS: ${allItems.length} (${allNotifications.length} notifications + ${messageNotifications.length} messages)`);
-
-    // LATEST NOTIFICATIONS LOGIC - Group by type and get latest
-    const itemsByType = {};
-    
-    allItems.forEach(item => {
-      const type = item.type;
-      if (!itemsByType[type]) {
-        itemsByType[type] = [];
-      }
-      itemsByType[type].push(item);
-    });
-
-    // Get the latest item for each type
-    const latestItems = Object.keys(itemsByType).map(type => {
-      const typeItems = itemsByType[type];
-      // Already sorted by createdAt: -1, so first is latest
-      const latestItem = typeItems[0];
-      
-      return {
-        ...latestItem,
-        isLatest: true,
-        latestForType: type,
-        totalCountForType: typeItems.length,
-        metadata: {
-          ...latestItem.metadata,
-          isLatestNotification: true,
-          representsMultiple: typeItems.length > 1,
-          totalSimilarNotifications: typeItems.length
-        }
-      };
-    });
-
-    // Sort latest items by createdAt (most recent first)
-    latestItems.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-
-    // Regular items (all except the latest ones)
-    const latestItemIds = new Set(latestItems.map(n => n._id.toString()));
-    const regularItems = allItems.filter(item => 
-      !latestItemIds.has(item._id.toString())
-    );
-
-    console.log(`⭐ Found ${latestItems.length} latest items across ${Object.keys(itemsByType).length} types`);
-    console.log(`📋 Regular items: ${regularItems.length}`);
-
-    // FIXED: Get all post IDs from notifications and find their owners
-    const postIdsFromNotifications = allItems
-      .filter(item => !item.isMessage) // Only notifications have posts
-      .map(item => {
-        return item.post?._id || item.post || 
-               (item.reference?.postId) || null;
-      })
-      .filter(Boolean)
-      .map(id => new mongoose.Types.ObjectId(id));
-
-    console.log(`📝 Looking for posts with IDs:`, postIdsFromNotifications);
-
-    // Find all users who have these posts
-    const usersWithPosts = await Auth.find({
-      "posts._id": { $in: postIdsFromNotifications }
-    })
-    .select("fullName profile posts")
-    .populate("posts.userId", "fullName profile")
-    .populate("posts.mentions", "fullName profile")
-    .lean();
-
-    console.log(`👥 Found ${usersWithPosts.length} users with matching posts`);
-
-    // Create a map of postId -> full post data
-    const postMap = new Map();
-    usersWithPosts.forEach(user => {
-      user.posts?.forEach(post => {
-        const postIdStr = post._id.toString();
-        postMap.set(postIdStr, {
-          _id: post._id,
-          description: post.description,
-          media: post.media || [],
-          mentions: post.mentions || [],
-          likes: post.likes || [],
-          comments: post.comments || [],
-          likesCount: post.likes?.length || 0,
-          commentsCount: post.comments?.length || 0,
-          createdAt: post.createdAt,
-          updatedAt: post.updatedAt,
-          user: {
-            _id: user._id,
-            fullName: user.fullName,
-            username: user.profile?.username,
-            image: user.profile?.image
-          }
-        });
-      });
-    });
-
-    // FIXED: Also check if the current user has these posts (since they're the recipient)
-    const currentUserPosts = await Auth.findById(userId)
-      .select("fullName profile posts")
-      .populate("posts.userId", "fullName profile")
-      .populate("posts.mentions", "fullName profile")
-      .lean();
-
-    if (currentUserPosts) {
-      currentUserPosts.posts?.forEach(post => {
-        const postIdStr = post._id.toString();
-        if (!postMap.has(postIdStr)) {
-          postMap.set(postIdStr, {
-            _id: post._id,
-            description: post.description,
-            media: post.media || [],
-            mentions: post.mentions || [],
-            likes: post.likes || [],
-            comments: post.comments || [],
-            likesCount: post.likes?.length || 0,
-            commentsCount: post.comments?.length || 0,
-            createdAt: post.createdAt,
-            updatedAt: post.updatedAt,
-            user: {
-              _id: currentUserPosts._id,
-              fullName: currentUserPosts.fullName,
-              username: currentUserPosts.profile?.username,
-              image: currentUserPosts.profile?.image
-            }
-          });
-        }
-      });
-    }
-
-    console.log(`🗺️ Post map has ${postMap.size} entries`);
-
-    // Function to format a single item (notification or message)
-    const formatItem = (item, isLatest = false) => {
-      // Handle MESSAGES differently
-      if (item.isMessage) {
-        return {
-          _id: item._id,
-          type: 'message',
-          message: item.message,
-          createdAt: item.createdAt,
-          isRead: item.isRead,
-          readAt: item.readAt,
-          
-          // Sender information
-          sender: item.sender ? {
-            _id: item.sender._id,
-            fullName: item.sender.fullName,
-            email: item.sender.email,
-            mobile: item.sender.mobile,
-            gender: item.sender.gender,
-            profile: {
-              username: item.sender.profile?.username,
-              image: item.sender.profile?.image,
-              firstName: item.sender.profile?.firstName,
-              lastName: item.sender.profile?.lastName,
-              about: item.sender.profile?.about,
-              website: item.sender.profile?.website
-            }
-          } : null,
-          
-          // Message-specific data
-          messageData: item.messageData,
-          reference: item.reference,
-          
-          // LATEST ITEM FIELDS
-          isLatest: isLatest,
-          latestForType: item.latestForType,
-          totalCountForType: item.totalCountForType,
-          
-          // Additional metadata
-          metadata: {
-            isActionable: true,
-            requiresResponse: false,
-            canViewPost: false,
-            priority: 'high',
-            hasPost: false,
-            hasComment: false,
-            isMessage: true,
-            isLatestNotification: isLatest,
-            representsMultiple: isLatest && item.totalCountForType > 1,
-            totalSimilarNotifications: item.totalCountForType || 1
-          }
-        };
-      }
-
-      // Handle REGULAR NOTIFICATIONS
-      // Try to find the post in multiple ways
-      let postDetails = null;
-      let postId = null;
-
-      // Method 1: Direct post reference
-      if (item.post) {
-        postId = item.post._id || item.post;
-      }
-      // Method 2: From reference
-      else if (item.reference?.postId) {
-        postId = item.reference.postId;
-      }
-      // Method 3: For comment notifications, the post should be in the notification
-      else if (item.type === 'comment' && item.post) {
-        postId = item.post._id || item.post;
-      }
-
-      if (postId) {
-        const postIdStr = postId.toString();
-        postDetails = postMap.get(postIdStr) || null;
-      }
-
-      // Create meaningful message based on type
-      let actionMessage = item.message;
-      if (!actionMessage && item.sender) {
-        const actionMap = {
-          'like': 'liked your post',
-          'comment': 'commented on your post', 
-          'mention': 'mentioned you in a post',
-          'post': 'created a new post',
-          'follow': 'started following you',
-          'follow_request': 'sent you a follow request',
-          'follow_approval': 'approved your follow request',
-          'message': 'sent you a message'
-        };
-        
-        let baseMessage = `${item.sender.fullName} ${actionMap[item.type] || 'sent you a notification'}`;
-        
-        // Enhance message for latest items that represent multiple
-        if (isLatest && item.totalCountForType > 1) {
-          if (item.type === 'like') {
-            actionMessage = `${item.sender.fullName} and ${item.totalCountForType - 1} others liked your post`;
-          } else if (item.type === 'comment') {
-            actionMessage = `${item.sender.fullName} and ${item.totalCountForType - 1} others commented on your post`;
-          } else if (item.type === 'follow') {
-            actionMessage = `${item.sender.fullName} and ${item.totalCountForType - 1} others started following you`;
-          } else if (item.type === 'message') {
-            actionMessage = `${item.sender.fullName} and ${item.totalCountForType - 1} others sent you messages`;
-          } else {
-            actionMessage = `${baseMessage} (and ${item.totalCountForType - 1} more)`;
-          }
-        } else {
-          actionMessage = baseMessage;
-        }
-      }
-
-      // Build item data
-      const itemData = {
-        _id: item._id,
-        type: item.type,
-        message: actionMessage,
-        createdAt: item.createdAt,
-        isRead: item.isRead,
-        readAt: item.readAt,
-        
-        // Sender information
-        sender: item.sender ? {
-          _id: item.sender._id,
-          fullName: item.sender.fullName,
-          email: item.sender.email,
-          mobile: item.sender.mobile,
-          gender: item.sender.gender,
-          profile: {
-            username: item.sender.profile?.username,
-            image: item.sender.profile?.image,
-            firstName: item.sender.profile?.firstName,
-            lastName: item.sender.profile?.lastName,
-            about: item.sender.profile?.about,
-            website: item.sender.profile?.website
-          }
-        } : null,
-        
-        // Post information (only for notifications)
-        post: postDetails,
-        
-        // Reference information
-        reference: item.reference || {},
-        
-        // LATEST ITEM FIELDS
-        isLatest: isLatest,
-        latestForType: item.latestForType,
-        totalCountForType: item.totalCountForType,
-        
-        // Additional metadata
-        metadata: {
-          isActionable: ['follow_request', 'message'].includes(item.type),
-          requiresResponse: item.type === 'follow_request',
-          canViewPost: !!postDetails,
-          priority: item.type === 'follow_request' ? 'high' : 'normal',
-          hasPost: !!postDetails,
-          hasComment: !!item.reference?.commentId,
-          isMessage: false,
-          isLatestNotification: isLatest,
-          representsMultiple: isLatest && item.totalCountForType > 1,
-          totalSimilarNotifications: item.totalCountForType || 1
-        }
-      };
-
-      return itemData;
-    };
-
-    // Format LATEST items first
-    const formattedLatestItems = latestItems.map(item => 
-      formatItem(item, true)
-    );
-    
-    // Format REGULAR items
-    const formattedRegularItems = regularItems.map(item => 
-      formatItem(item, false)
-    );
-
-    // COMBINE: LATEST ITEMS FIRST, then regular ones
-    const allFormattedItems = [
-      ...formattedLatestItems,
-      ...formattedRegularItems
+    // ✅ STEP 7: COMBINE EVERYTHING
+    const allItems = [
+      ...allNotifications,
+      ...autoCreatedNotifications,
+      ...messageNotifications,
+      ...followRequestNotifications
     ];
 
-    // Apply pagination to the combined array
-    const paginatedItems = allFormattedItems.slice(skip, skip + limitNum);
+    // Sort by creation date (newest first)
+    allItems.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 
-    // Calculate statistics
-    const totalCount = allFormattedItems.length;
-    const unreadCount = allFormattedItems.filter(n => !n.isRead).length;
+    console.log(`📊 FINAL TOTAL: ${allItems.length} items`);
+
+    // ✅ STEP 8: APPLY PAGINATION
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const limitNum = parseInt(limit);
+    const paginatedItems = allItems.slice(skip, skip + limitNum);
+
+    // ✅ STEP 9: CALCULATE STATISTICS
+    const totalCount = allItems.length;
+    const unreadCount = allItems.filter(n => !n.isRead).length;
     const readCount = totalCount - unreadCount;
 
-    // Enhanced type stats with latest item info
-    const typeStats = allFormattedItems.reduce((acc, item) => {
+    // Type breakdown
+    const typeStats = allItems.reduce((acc, item) => {
       const type = item.type;
       if (!acc[type]) {
         acc[type] = { 
           total: 0, 
           unread: 0,
-          percentage: 0,
-          hasLatest: false,
-          latestItemId: null,
-          latestMessage: null
+          percentage: 0
         };
       }
       acc[type].total++;
       if (!item.isRead) {
         acc[type].unread++;
-      }
-      if (item.isLatest) {
-        acc[type].hasLatest = true;
-        acc[type].latestItemId = item._id;
-        acc[type].latestMessage = item.message;
       }
       return acc;
     }, {});
@@ -1140,66 +1069,39 @@ exports.getAllLiveNotifications = async (req, res) => {
         : 0;
     });
 
-    // Prepare pagination info
+    // ✅ STEP 10: PREPARE FINAL RESPONSE
     const totalPages = Math.ceil(totalCount / limitNum);
     const hasNextPage = page < totalPages;
     const hasPrevPage = page > 1;
 
-    // LATEST ITEMS SUMMARY
-    const latestSummary = {
-      totalLatest: formattedLatestItems.length,
-      typesWithLatest: formattedLatestItems.map(n => ({
-        type: n.type,
-        message: n.message,
-        totalRepresented: n.totalCountForType,
-        createdAt: n.createdAt,
-        isMessage: n.metadata?.isMessage || false
-      })),
-      // Quick access to latest items
-      latestItems: formattedLatestItems.map(n => ({
-        _id: n._id,
-        type: n.type,
-        message: n.message,
-        createdAt: n.createdAt,
-        isRead: n.isRead,
-        totalRepresented: n.totalCountForType,
-        isMessage: n.metadata?.isMessage || false
-      }))
-    };
-
-    // Prepare response with LATEST ITEMS FIRST
     const response = {
       success: true,
-      message: `Found ${totalCount} items for user (${allNotifications.length} notifications + ${messageNotifications.length} messages)`,
+      message: `Found ${totalCount} total items (${allNotifications.length} db + ${autoCreatedNotifications.length} auto + ${messageNotifications.length} messages + ${followRequestNotifications.length} follow requests)`,
       data: {
-        // MAIN ITEMS ARRAY - LATEST FIRST (includes both notifications and messages)
+        // MAIN NOTIFICATIONS ARRAY
         notifications: paginatedItems,
-        
-        // LATEST ITEMS SECTION (for easy access)
-        latestNotifications: formattedLatestItems,
         
         // BREAKDOWN
         breakdown: {
-          totalNotifications: allNotifications.length,
+          totalDatabaseNotifications: allNotifications.length,
+          totalAutoCreated: autoCreatedNotifications.length,
           totalMessages: messageNotifications.length,
-          unreadNotifications: allNotifications.filter(n => !n.isRead).length,
-          unreadMessages: messageNotifications.filter(m => !m.isRead).length
+          totalFollowRequests: followRequestNotifications.length,
+          unreadCount: unreadCount,
+          readCount: readCount
         },
         
         // SUMMARY
-        latestSummary: latestSummary,
         summary: {
           total: totalCount,
           unread: unreadCount,
           read: readCount,
           byType: typeStats,
           readPercentage: totalCount > 0 ? Math.round((readCount / totalCount) * 100) : 0,
-          unreadPercentage: totalCount > 0 ? Math.round((unreadCount / totalCount) * 100) : 0,
-          postsWithData: allFormattedItems.filter(n => n.post).length,
-          messagesWithData: allFormattedItems.filter(n => n.metadata?.isMessage).length,
-          latestItemsCount: formattedLatestItems.length,
-          regularItemsCount: formattedRegularItems.length
+          unreadPercentage: totalCount > 0 ? Math.round((unreadCount / totalCount) * 100) : 0
         },
+        
+        // PAGINATION
         pagination: {
           currentPage: parseInt(page),
           totalPages,
@@ -1210,16 +1112,15 @@ exports.getAllLiveNotifications = async (req, res) => {
           nextPage: hasNextPage ? parseInt(page) + 1 : null,
           prevPage: hasPrevPage ? parseInt(page) - 1 : null
         },
+        
+        // USER INFO
         user: {
           _id: userId,
           totalItems: totalCount,
-          unreadItems: unreadCount,
-          latestItems: formattedLatestItems.length,
-          unreadMessages: messageNotifications.length
+          unreadItems: unreadCount
         }
       },
-      timestamp: new Date(),
-      version: "5.0" // Version with MESSAGES + LATEST NOTIFICATIONS FIRST
+      timestamp: new Date()
     };
 
     res.status(200).json(response);
@@ -1228,13 +1129,12 @@ exports.getAllLiveNotifications = async (req, res) => {
     console.error("❌ Get all notifications error:", err);
     res.status(500).json({
       success: false,
-      message: "Server error while fetching notifications and messages",
+      message: "Server error while fetching notifications",
       error: err.message,
       timestamp: new Date()
     });
   }
 };
-
 // Debug endpoint to check notification-post relationships
 exports.debugNotificationPosts = async (req, res) => {
   try {
@@ -1539,42 +1439,135 @@ exports.debugNotifications = async (req, res) => {
       return res.status(400).json({ success: false, message: "Invalid userId" });
     }
 
-    // Check all notifications for this user
-    const allNotifications = await Notification.find({
-      recipient: new mongoose.Types.ObjectId(userId)
-    })
-    .populate("sender", "fullName profile.username")
-    .populate("post", "description")
-    .lean();
-
-    // Check if any users have posts that should generate notifications
-    const usersWithPosts = await Auth.find({ 
-      "posts.0": { $exists: true } 
-    })
-    .select("fullName posts")
-    .lean();
-
-    // Check followers for the user
     const user = await Auth.findById(userId)
-      .select("followers following posts")
+      .select("fullName posts followers following")
       .populate("followers", "fullName")
       .populate("following", "fullName")
       .lean();
 
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    // Check existing notifications
+    const existingNotifications = await Notification.find({
+      recipient: new mongoose.Types.ObjectId(userId)
+    })
+    .populate("sender", "fullName")
+    .populate("post", "description")
+    .lean();
+
+    // Analyze what notifications SHOULD exist
+    const expectedNotifications = [];
+
+    // Check for POST notifications to followers
+    if (user.posts && user.posts.length > 0) {
+      user.posts.forEach(post => {
+        if (user.followers && user.followers.length > 0) {
+          user.followers.forEach(follower => {
+            const shouldHaveNotif = existingNotifications.find(n => 
+              n.type === 'post' && 
+              n.post && n.post._id.toString() === post._id.toString() &&
+              n.recipient.toString() === follower._id.toString()
+            );
+            
+            if (!shouldHaveNotif) {
+              expectedNotifications.push({
+                type: 'MISSING_POST_NOTIFICATION',
+                for: 'FOLLOWERS',
+                postId: post._id,
+                postDescription: post.description?.substring(0, 30),
+                followerId: follower._id,
+                followerName: follower.fullName
+              });
+            }
+          });
+        }
+      });
+    }
+
+    // Check for COMMENT notifications
+    if (user.posts && user.posts.length > 0) {
+      user.posts.forEach(post => {
+        if (post.comments && post.comments.length > 0) {
+          post.comments.forEach(comment => {
+            // The post owner should get notification for comments
+            const shouldHaveNotif = existingNotifications.find(n => 
+              n.type === 'comment' && 
+              n.post && n.post._id.toString() === post._id.toString() &&
+              n.reference && n.reference.commentId && n.reference.commentId.toString() === comment._id.toString()
+            );
+            
+            if (!shouldHaveNotif) {
+              expectedNotifications.push({
+                type: 'MISSING_COMMENT_NOTIFICATION',
+                for: 'POST_OWNER',
+                postId: post._id,
+                postDescription: post.description?.substring(0, 30),
+                commentId: comment._id,
+                commentText: comment.text?.substring(0, 30),
+                commenterId: comment.userId
+              });
+            }
+          });
+        }
+      });
+    }
+
+    // Check for MENTION notifications
+    if (user.posts && user.posts.length > 0) {
+      user.posts.forEach(post => {
+        if (post.mentions && post.mentions.length > 0) {
+          post.mentions.forEach(mentionedUserId => {
+            // Mentioned user should get notification
+            const shouldHaveNotif = existingNotifications.find(n => 
+              n.type === 'mention' && 
+              n.post && n.post._id.toString() === post._id.toString() &&
+              n.recipient.toString() === mentionedUserId.toString()
+            );
+            
+            if (!shouldHaveNotif) {
+              expectedNotifications.push({
+                type: 'MISSING_MENTION_NOTIFICATION',
+                for: 'MENTIONED_USER',
+                postId: post._id,
+                postDescription: post.description?.substring(0, 30),
+                mentionedUserId: mentionedUserId
+              });
+            }
+          });
+        }
+      });
+    }
+
     res.status(200).json({
       success: true,
-      debugInfo: {
-        totalNotificationsInDB: allNotifications.length,
-        notifications: allNotifications,
-        userFollowers: user?.followers || [],
-        userFollowing: user?.following || [],
-        userPostsCount: user?.posts?.length || 0,
-        totalUsersWithPosts: usersWithPosts.length,
-        samplePosts: usersWithPosts.slice(0, 3).map(u => ({
-          userId: u._id,
-          fullName: u.fullName,
-          postsCount: u.posts?.length || 0
-        }))
+      message: "Notification analysis completed",
+      data: {
+        user: {
+          fullName: user.fullName,
+          postsCount: user.posts?.length || 0,
+          followersCount: user.followers?.length || 0,
+          followingCount: user.following?.length || 0
+        },
+        existingNotifications: {
+          total: existingNotifications.length,
+          byType: existingNotifications.reduce((acc, n) => {
+            acc[n.type] = (acc[n.type] || 0) + 1;
+            return acc;
+          }, {})
+        },
+        missingNotifications: {
+          total: expectedNotifications.length,
+          details: expectedNotifications
+        },
+        postsAnalysis: user.posts?.map(post => ({
+          postId: post._id,
+          description: post.description?.substring(0, 50),
+          likes: post.likes?.length || 0,
+          comments: post.comments?.length || 0,
+          mentions: post.mentions?.length || 0
+        })) || []
       }
     });
 
@@ -1583,7 +1576,6 @@ exports.debugNotifications = async (req, res) => {
     res.status(500).json({ success: false, message: "Debug error", error: err.message });
   }
 };
-
 
 /**
  * markAsRead
