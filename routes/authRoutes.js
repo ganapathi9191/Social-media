@@ -207,37 +207,40 @@ router.delete("/saved-posts/:userId/:postId", postController.deleteSavedPost);
 
 // ------------------ NOTIFICATION ROUTES ------------------
 
+// ------------------ NOTIFICATION ROUTES ------------------
 
+// Fetch comments where user is mentioned
 router.get("/mentions/:userId", notification.getMentionedComments);
-// Get all notifications for a user
+
+// Get all notifications
 router.get('/notifications/:userId', notification.getUserNotifications);
 
-// Mark notification as read
+// Mark single notification as read
 router.put('/notifications/read/:notificationId', notification.markAsRead);
 
 // Mark all notifications as read
 router.put('/notifications/read-all/:userId', notification.markAllAsRead);
 
-// Delete notification
+// Delete a notification
 router.delete('/notifications/:notificationId', notification.deleteNotification);
 
-
-
-
-// 🔹 Preferences
+// Notification preferences
 router.put("/preferences", notification.updateNotificationPreferences);
 router.get("/preferences/:userId", notification.getNotificationPreferences);
 
-
-// Get unread notification count
+// Unread notification count
 router.get('/notifications/unread-count/:userId', notification.getUnreadCount);
 
-// Get all live notifications combined
+// Live notifications (combined)
 router.get('/notifications/all-live/:userId', notification.getAllLiveNotifications);
-// Get ONLY new/unread notifications for popup
+
+router.get('/debug/:userId', notification.debugNotifications);
+
+
+// Only unread notifications (popup)
 router.get('/popup-notifications/live/:userId', notification.getLivepopupNotifications);
 
-// router.post('/sync/:userId', notificationController.syncLiveNotifications);
+
 
 // ------------------ MENTION ROUTES ------------------
 

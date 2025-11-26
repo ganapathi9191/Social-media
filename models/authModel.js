@@ -1,6 +1,6 @@
 const mongoose = require("mongoose");
 
-// ✅ Define postSchema first
+// ✅ Define postSchema - CLEAN VERSION
 const postSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: "Auth", required: true },
   description: String,
@@ -11,22 +11,18 @@ const postSchema = new mongoose.Schema({
       type: { type: String, enum: ["image", "video"], required: true }
     }
   ],
-  likes: [{
-    userId: { type: mongoose.Schema.Types.ObjectId, ref: "Auth" },
-    notificationHandled: { type: Boolean, default: false } // ✅ prevent recreation
-  }],
+  likes: [{ type: mongoose.Schema.Types.ObjectId, ref: "Auth" }], // ✅ Just ObjectIds
   comments: [{
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'Auth', required: true },
     text: { type: String, required: true },
     createdAt: { type: Date, default: Date.now },
-    mentions: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Auth' }],
-    notificationHandled: { type: Boolean, default: false } // ✅ prevent recreation
+    mentions: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Auth' }]
   }],
   mentions: [{ type: mongoose.Schema.Types.ObjectId, ref: "Auth" }],
   createdAt: { type: Date, default: Date.now },
 })
 
-// ✅ Register Post as its own model (IMPORTANT)
+// ✅ Register Post as its own model
 const Post = mongoose.model("Post", postSchema);
 
 const profileSchema = new mongoose.Schema({
@@ -78,13 +74,21 @@ const authSchema = new mongoose.Schema({
   },
   notificationPreferences: {
     type: notificationPreferencesSchema,
-    default: () => ({})
+    default: () => ({
+      posts: true,
+      follows: true,
+      likes: true,
+      comments: true,
+      followRequests: true,
+      followApprovals: true,
+      mentions: true
+    })
   },
   approvedFollowers: [{ type: mongoose.Schema.Types.ObjectId, ref: "Auth" }],
   posts: [postSchema],
 }, { timestamps: true });
 
-// ✅ Fixed notificationSchema
+// ✅ Notification schema
 const notificationSchema = new mongoose.Schema({
   recipient: { type: mongoose.Schema.Types.ObjectId, ref: "Auth", required: true },
   sender: { type: mongoose.Schema.Types.ObjectId, ref: "Auth", required: true },
@@ -93,7 +97,7 @@ const notificationSchema = new mongoose.Schema({
     enum: ['like', 'comment', 'mention', 'post', 'follow_request', 'follow_approval', 'follow_reject', 'follow', 'message'],
     required: true
   },
-  post: { type: mongoose.Schema.Types.ObjectId, ref: "Post" }, // ✅ fixed reference
+  post: { type: mongoose.Schema.Types.ObjectId, ref: "Post" },
   actionType: { type: String, enum: ['create', 'update', 'delete', 'accept', 'reject'], default: 'create' },
   reference: {
     postId: mongoose.Schema.Types.ObjectId,
@@ -105,6 +109,7 @@ const notificationSchema = new mongoose.Schema({
     description: String,
     preview: String
   },
+  message: String,
   isRead: { type: Boolean, default: false },
   readAt: Date,
   isDeleted: { type: Boolean, default: false },
@@ -112,11 +117,9 @@ const notificationSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now, index: true }
 });
 
-// ✅ Add unique index to prevent duplicate notifications
-notificationSchema.index(
-  { recipient: 1, sender: 1, type: 1, post: 1, "reference.commentId": 1 },
-  { unique: true, sparse: true }
-);
+// ✅ Indexes
+notificationSchema.index({ recipient: 1, isRead: 1, createdAt: -1 });
+notificationSchema.index({ recipient: 1, type: 1, createdAt: -1 });
 
 // ✅ Export models
 const Auth = mongoose.model("Auth", authSchema);

@@ -5,6 +5,111 @@ const { uploadImage, uploadToCloudinary, uploadImages, uploadToCloudinarys } = r
 const { Auth, Notification } = require('../models/authModel');
 
 let tempForgotToken = null;
+const toObjectId = (id) => {
+  try {
+    return new mongoose.Types.ObjectId(id);
+  } catch {
+    return id; // fallback for string IDs
+  }
+};
+
+
+const createNotification = async (recipient, sender, type, postId = null, commentId = null, message = "", options = {}) => {
+  try {
+    const { allowSelf = true, checkPreferences = false } = options;
+
+    console.log(`🔔 Creating notification:`, { 
+      recipient, 
+      sender, 
+      type, 
+      postId, 
+      message 
+    });
+
+    if (!recipient || !sender) {
+      console.warn("createNotification: missing recipient or sender");
+      return null;
+    }
+
+    // Normalize to ObjectId objects when possible
+    const recipientId = toObjectId(recipient);
+    const senderId = toObjectId(sender);
+
+    if (!allowSelf && String(recipientId) === String(senderId)) {
+      console.log("createNotification: skipping self notification");
+      return null;
+    }
+
+    // Optional preferences check
+    if (checkPreferences) {
+      try {
+        const recipientUser = await Auth.findById(recipientId).select("notificationPreferences").lean();
+        if (!recipientUser) {
+          console.log("createNotification: recipient not found");
+          return null;
+        }
+        const prefs = recipientUser.notificationPreferences || {};
+        const prefMap = {
+          post: "posts",
+          follow: "follows",
+          like: "likes",
+          comment: "comments",
+          follow_request: "followRequests",
+          follow_approval: "followApprovals",
+          mention: "mentions",
+          message: "messages"
+        };
+        const prefKey = prefMap[type] || null;
+        if (prefKey && prefs[prefKey] === false) {
+          console.log(`createNotification: recipient preference disables '${type}' notifications`);
+          return null;
+        }
+      } catch (e) {
+        console.warn("createNotification: preference check failed:", e.message);
+      }
+    }
+
+    const payload = {
+      recipient: recipientId,
+      sender: senderId,
+      type,
+      message: message || "New notification",
+      isRead: false,
+      isDeleted: false,
+      createdAt: new Date()
+    };
+
+    if (postId) payload.post = toObjectId(postId);
+    if (commentId) payload.reference = { commentId: toObjectId(commentId) };
+
+    const notification = await Notification.create(payload);
+    console.log(`✅ Notification created:`, notification._id);
+
+    // emit real-time if socket exists
+    const io = global.io;
+    if (io) {
+      try {
+        const populated = await Notification.findById(notification._id)
+          .populate("sender", "fullName profile.username profile.image")
+          .populate("post", "description media userId")
+          .lean();
+        io.to(String(recipientId)).emit("newNotification", populated);
+        console.log(`📡 Real-time notification sent to user: ${recipientId}`);
+      } catch (e) {
+        console.warn("createNotification: emit/populate failed:", e.message);
+      }
+    }
+
+    return notification;
+  } catch (error) {
+    if (error && error.code === 11000) {
+      console.warn("createNotification: duplicate prevented (11000).");
+      return null;
+    }
+    console.error("createNotification error:", error);
+    return null;
+  }
+};
 
 // ------------------ AUTHENTICATION CONTROLLERS ------------------
 

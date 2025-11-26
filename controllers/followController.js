@@ -2,10 +2,119 @@ const mongoose = require("mongoose");
 const { Auth } = require('../models/authModel');
 const { sendFollowNotification, sendFollowRequestNotification, sendFollowApprovalNotification } = require('./notificationControllers');
 
+
+const toObjectId = (id) => {
+  try {
+    return new mongoose.Types.ObjectId(id);
+  } catch {
+    return id; // fallback for string IDs
+  }
+};
+
+
+const createNotification = async (recipient, sender, type, postId = null, commentId = null, message = "", options = {}) => {
+  try {
+    const { allowSelf = true, checkPreferences = false } = options;
+
+    console.log(`🔔 Creating notification:`, { 
+      recipient, 
+      sender, 
+      type, 
+      postId, 
+      message 
+    });
+
+    if (!recipient || !sender) {
+      console.warn("createNotification: missing recipient or sender");
+      return null;
+    }
+
+    // Normalize to ObjectId objects when possible
+    const recipientId = toObjectId(recipient);
+    const senderId = toObjectId(sender);
+
+    if (!allowSelf && String(recipientId) === String(senderId)) {
+      console.log("createNotification: skipping self notification");
+      return null;
+    }
+
+    // Optional preferences check
+    if (checkPreferences) {
+      try {
+        const recipientUser = await Auth.findById(recipientId).select("notificationPreferences").lean();
+        if (!recipientUser) {
+          console.log("createNotification: recipient not found");
+          return null;
+        }
+        const prefs = recipientUser.notificationPreferences || {};
+        const prefMap = {
+          post: "posts",
+          follow: "follows",
+          like: "likes",
+          comment: "comments",
+          follow_request: "followRequests",
+          follow_approval: "followApprovals",
+          mention: "mentions",
+          message: "messages"
+        };
+        const prefKey = prefMap[type] || null;
+        if (prefKey && prefs[prefKey] === false) {
+          console.log(`createNotification: recipient preference disables '${type}' notifications`);
+          return null;
+        }
+      } catch (e) {
+        console.warn("createNotification: preference check failed:", e.message);
+      }
+    }
+
+    const payload = {
+      recipient: recipientId,
+      sender: senderId,
+      type,
+      message: message || "New notification",
+      isRead: false,
+      isDeleted: false,
+      createdAt: new Date()
+    };
+
+    if (postId) payload.post = toObjectId(postId);
+    if (commentId) payload.reference = { commentId: toObjectId(commentId) };
+
+    const notification = await Notification.create(payload);
+    console.log(`✅ Notification created:`, notification._id);
+
+    // emit real-time if socket exists
+    const io = global.io;
+    if (io) {
+      try {
+        const populated = await Notification.findById(notification._id)
+          .populate("sender", "fullName profile.username profile.image")
+          .populate("post", "description media userId")
+          .lean();
+        io.to(String(recipientId)).emit("newNotification", populated);
+        console.log(`📡 Real-time notification sent to user: ${recipientId}`);
+      } catch (e) {
+        console.warn("createNotification: emit/populate failed:", e.message);
+      }
+    }
+
+    return notification;
+  } catch (error) {
+    if (error && error.code === 11000) {
+      console.warn("createNotification: duplicate prevented (11000).");
+      return null;
+    }
+    console.error("createNotification error:", error);
+    return null;
+  }
+};
 // Send Follow Request
 exports.sendFollowRequest = async (req, res) => {
-  try {
-    const { userId, followerId } = req.body; // userId = target user, followerId = sender
+   try {
+    const { userId, followerId } = req.body;
+    
+    console.log(`👥 Follow request:`, { userId, followerId });
+    
     const user = await Auth.findById(userId);
     const follower = await Auth.findById(followerId);
 
@@ -26,12 +135,93 @@ exports.sendFollowRequest = async (req, res) => {
     user.followerRequests.push(followerId);
     await user.save();
 
-    res.status(200).json({ success: true, message: "Follow request sent" });
+    // 🔥 AUTOMATICALLY CREATE NOTIFICATION FOR USER BEING FOLLOWED
+    try {
+      const notification = await createNotification(
+        userId, // User receiving the follow request
+        followerId, // User sending the request
+        "follow_request",
+        null,
+        null,
+        `${follower.fullName} sent you a follow request`,
+        { allowSelf: false, checkPreferences: true }
+      );
+      
+      if (notification) {
+        console.log(`✅ Follow request notification created:`, notification._id);
+      }
+    } catch (error) {
+      console.error(`🚨 Error creating follow request notification:`, error.message);
+    }
+
+    res.status(200).json({ 
+      success: true, 
+      message: "Follow request sent",
+      debug: {
+        notificationCreated: true
+      }
+    });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
 };
 
+// FIXED approveFollowRequest function
+exports.approveFollowRequest = async (req, res) => {
+  try {
+    const { userId, requesterId } = req.body;
+    
+    console.log(`✅ Approve follow request:`, { userId, requesterId });
+    
+    const user = await Auth.findById(userId);
+    const requester = await Auth.findById(requesterId);
+
+    if (!user || !requester) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    if (!user.followerRequests.includes(requesterId)) {
+      return res.status(400).json({ success: false, message: "No follow request found" });
+    }
+
+    // Move to followers/following
+    user.followerRequests.pull(requesterId);
+    user.followers.push(requesterId);
+    requester.following.push(userId);
+
+    await user.save();
+    await requester.save();
+
+    // 🔥 AUTOMATICALLY CREATE NOTIFICATION FOR REQUESTER
+    try {
+      const notification = await createNotification(
+        requesterId, // User who sent the request
+        userId, // User who approved it
+        "follow_approval", 
+        null,
+        null,
+        `${user.fullName} approved your follow request`,
+        { allowSelf: false, checkPreferences: true }
+      );
+      
+      if (notification) {
+        console.log(`✅ Follow approval notification created:`, notification._id);
+      }
+    } catch (error) {
+      console.error(`🚨 Error creating follow approval notification:`, error.message);
+    }
+
+    res.status(200).json({ 
+      success: true, 
+      message: "Follow request approved",
+      debug: {
+        notificationCreated: true
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
 
 
 // Approve Follow Request
