@@ -1,40 +1,56 @@
-const express = require('express');
+const express = require("express");
 const router = express.Router();
-const messageController = require('../controllers/messageController');
-const upload = require('../utils/multer');  // Multer for image/file upload
+const upload = require("../utils/upload"); // your multer file
+const messageController = require("../controllers/messageController");
 
-/* ============================================================
-   CHAT ROUTES
-============================================================ */
-router.post('/chat', messageController.getOrCreateChat);
-router.get('/chats/:userId', messageController.getUserChats);
+// CHAT
+router.post("/chat/permission", messageController.chat);
+router.post("/chat/get-or-create", messageController.getOrCreateChat);
 
-router.post('/chat/block', messageController.blockChat);
-router.post('/chat/unblock', messageController.unblockChat);
+// SEND MESSAGE (TEXT/IMAGE/VIDEO)
+router.post(
+  "/messages/send",
+  upload.array("media", 10),
+  messageController.sendMessage
+);
 
-/* ============================================================
-   MESSAGE ROUTES
-============================================================ */
+// GET MESSAGES
+router.get("/messages/:chatId", messageController.getMessages);
 
-// Send message (text/image/file)
-router.post('/message', upload.array('file'), messageController.sendMessage);
+// SEARCH
+router.get("/messages/search/:chatId", messageController.searchMessages);
 
-// Get messages in a chat
-router.get('/messages/:chatId', messageController.getMessages);
+// LAST MESSAGE
+router.get("/messages/last", messageController.getLastMessage);
 
-// Mark messages as read
-router.put('/messages/read', messageController.markAsRead);
+// READ / DELIVERY
+router.post("/messages/mark-read", messageController.markAsRead);
+router.post("/messages/delivery-confirm", messageController.confirmDelivery);
 
-// Soft delete (delete only for user)
-router.delete('/message', messageController.deleteMessage);
+// DELETE
+router.post("/messages/delete", messageController.deleteMessage);
+router.delete(
+  "/messages/delete/:messageId/:userId",
+  messageController.deletechatmessage
+);
 
-// Unread message count
-router.get('/messages/unread/:userId', messageController.getUnreadCount);
+// BLOCK / UNBLOCK
+router.post("/chat/block", messageController.blockChat);
+router.post("/chat/unblock", messageController.unblockChat);
 
-// Get last message between users or by chatId
-router.get('/last-message', messageController.getLastMessage);
+// UNREAD COUNTS
+router.get("/messages/unread/count/:userId", messageController.getUnreadCount);
+router.get(
+  "/messages/unread/count/:userId/:chatId",
+  messageController.getUnreadCountPerChat
+);
 
-// Permanent delete for both sides
-router.delete('/messages/:messageId/:userId', messageController.deletechatmessage);
+// USER STATUS
+router.get("/user/status/:userId", messageController.getUserStatus);
+router.get("/users/online", messageController.getAllOnlineUsers);
+router.get("/user/last-seen/:userId", messageController.getLastSeen);
+
+// TYPING
+router.post("/messages/typing", messageController.setTyping);
 
 module.exports = router;
