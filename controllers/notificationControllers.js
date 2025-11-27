@@ -693,7 +693,7 @@ exports.getAllLiveNotifications = async (req, res) => {
     const { userId } = req.params;
     const { 
       page = 1, 
-      limit = 100, // Increased limit to show more
+      limit = 100,
       type, 
       unreadOnly = false
     } = req.query;
@@ -709,7 +709,7 @@ exports.getAllLiveNotifications = async (req, res) => {
 
     const userObjectId = new mongoose.Types.ObjectId(userId);
 
-    // ✅ STEP 1: GET ALL DATABASE NOTIFICATIONS
+    // ✅ STEP 1: GET ALL DATABASE NOTIFICATIONS (INCLUDING FOLLOW REQUESTS & APPROVALS)
     const query = {
       recipient: userObjectId,
       isDeleted: { $ne: true }
@@ -732,6 +732,7 @@ exports.getAllLiveNotifications = async (req, res) => {
       .lean();
 
     console.log(`✅ DATABASE NOTIFICATIONS: ${allNotifications.length}`);
+    console.log(`📋 Database notification types:`, allNotifications.map(n => n.type));
 
     // ✅ STEP 2: GET UNREAD MESSAGES AS NOTIFICATIONS
     const unreadMessages = await Message.find({
@@ -767,41 +768,61 @@ exports.getAllLiveNotifications = async (req, res) => {
       });
     }
 
-    const followRequestNotifications = currentUser?.followerRequests?.map(requester => ({
-      _id: new mongoose.Types.ObjectId(),
-      type: 'follow_request',
-      message: `${requester.fullName || 'Someone'} sent you a follow request`,
-      createdAt: requester.createdAt || new Date(),
-      isRead: false,
-      readAt: null,
-      sender: requester,
-      reference: {
-        requesterId: requester._id,
-        userId: userId
-      },
-      metadata: {
-        isActionable: true,
-        requiresResponse: true,
-        canViewPost: false,
-        priority: 'high',
-        hasPost: false,
-        hasComment: false,
-        isMessage: false,
-        isFollowRequest: true
-      },
-      isFollowRequest: true
-    })) || [];
+    const followRequestNotifications = currentUser?.followerRequests?.map(requester => {
+      // Check if this follow request already exists in database notifications
+      const existingNotification = allNotifications.find(n => 
+        n.type === 'follow_request' && 
+        n.sender && n.sender._id.toString() === requester._id.toString()
+      );
+
+      // Only create if it doesn't exist in database
+      if (!existingNotification) {
+        return {
+          _id: new mongoose.Types.ObjectId(),
+          type: 'follow_request',
+          message: `${requester.fullName || 'Someone'} sent you a follow request`,
+          createdAt: requester.createdAt || new Date(),
+          isRead: false,
+          readAt: null,
+          sender: requester,
+          reference: {
+            requesterId: requester._id,
+            userId: userId
+          },
+          metadata: {
+            isActionable: true,
+            requiresResponse: true,
+            canViewPost: false,
+            priority: 'high',
+            hasPost: false,
+            hasComment: false,
+            isMessage: false,
+            isFollowRequest: true
+          },
+          isFollowRequest: true,
+          isFromDatabase: false
+        };
+      }
+      return null;
+    }).filter(Boolean) || [];
 
     console.log(`👥 FOLLOW REQUESTS: ${followRequestNotifications.length}`);
 
-    // ✅ STEP 4: GET USER'S POSTS DATA FOR AUTO-GENERATING MISSING NOTIFICATIONS
+    // ✅ STEP 4: GET FOLLOW APPROVAL NOTIFICATIONS FROM DATABASE
+    const followApprovalNotifications = allNotifications.filter(n => 
+      n.type === 'follow_approval' || n.type === 'follow_accept'
+    );
+
+    console.log(`✅ FOLLOW APPROVALS from DB: ${followApprovalNotifications.length}`);
+
+    // ✅ STEP 5: GET USER'S POSTS DATA FOR AUTO-GENERATING MISSING NOTIFICATIONS
     const userWithPosts = await Auth.findById(userId)
       .select("fullName posts followers following")
       .populate("followers", "fullName")
       .populate("following", "fullName")
       .lean();
 
-    // ✅ STEP 5: AUTO-CREATE MISSING NOTIFICATIONS IN REAL-TIME
+    // ✅ STEP 6: AUTO-CREATE MISSING NOTIFICATIONS IN REAL-TIME
     const autoCreatedNotifications = [];
 
     if (userWithPosts && userWithPosts.posts) {
@@ -958,7 +979,7 @@ exports.getAllLiveNotifications = async (req, res) => {
                 _id: new mongoose.Types.ObjectId(),
                 type: 'like',
                 message: `${liker?.fullName || 'Someone'} liked your post`,
-                createdAt: post.updatedAt, // Use post update time for likes
+                createdAt: post.updatedAt,
                 isRead: false,
                 sender: liker ? {
                   _id: liker._id,
@@ -991,7 +1012,7 @@ exports.getAllLiveNotifications = async (req, res) => {
 
     console.log(`🤖 AUTO-CREATED NOTIFICATIONS: ${autoCreatedNotifications.length}`);
 
-    // ✅ STEP 6: CONVERT MESSAGES TO NOTIFICATION FORMAT
+    // ✅ STEP 7: CONVERT MESSAGES TO NOTIFICATION FORMAT
     const messageNotifications = unreadMessages.map(message => ({
       _id: message._id,
       type: 'message',
@@ -1022,30 +1043,39 @@ exports.getAllLiveNotifications = async (req, res) => {
       }
     }));
 
-    // ✅ STEP 7: COMBINE EVERYTHING
+    // ✅ STEP 8: COMBINE EVERYTHING
     const allItems = [
-      ...allNotifications,
+      ...allNotifications, // This now includes follow_request and follow_approval from database
       ...autoCreatedNotifications,
       ...messageNotifications,
-      ...followRequestNotifications
+      ...followRequestNotifications // Fallback for follow requests not in database
     ];
 
     // Sort by creation date (newest first)
     allItems.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 
     console.log(`📊 FINAL TOTAL: ${allItems.length} items`);
+    console.log(`🔍 Follow-related notifications in final list:`, 
+      allItems.filter(item => 
+        item.type.includes('follow') || item.isFollowRequest
+      ).map(item => ({
+        type: item.type,
+        message: item.message,
+        isFromDatabase: !item.isAutoCreated && !item.isFollowRequest
+      }))
+    );
 
-    // ✅ STEP 8: APPLY PAGINATION
+    // ✅ STEP 9: APPLY PAGINATION
     const skip = (parseInt(page) - 1) * parseInt(limit);
     const limitNum = parseInt(limit);
     const paginatedItems = allItems.slice(skip, skip + limitNum);
 
-    // ✅ STEP 9: CALCULATE STATISTICS
+    // ✅ STEP 10: CALCULATE STATISTICS
     const totalCount = allItems.length;
     const unreadCount = allItems.filter(n => !n.isRead).length;
     const readCount = totalCount - unreadCount;
 
-    // Type breakdown
+    // Type breakdown - specifically track follow types
     const typeStats = allItems.reduce((acc, item) => {
       const type = item.type;
       if (!acc[type]) {
@@ -1069,7 +1099,7 @@ exports.getAllLiveNotifications = async (req, res) => {
         : 0;
     });
 
-    // ✅ STEP 10: PREPARE FINAL RESPONSE
+    // ✅ STEP 11: PREPARE FINAL RESPONSE
     const totalPages = Math.ceil(totalCount / limitNum);
     const hasNextPage = page < totalPages;
     const hasPrevPage = page > 1;
@@ -1088,7 +1118,13 @@ exports.getAllLiveNotifications = async (req, res) => {
           totalMessages: messageNotifications.length,
           totalFollowRequests: followRequestNotifications.length,
           unreadCount: unreadCount,
-          readCount: readCount
+          readCount: readCount,
+          // Specific follow notification counts
+          followNotifications: {
+            requests: allItems.filter(item => item.type === 'follow_request').length,
+            approvals: allItems.filter(item => item.type === 'follow_approval').length,
+            total: allItems.filter(item => item.type.includes('follow')).length
+          }
         },
         
         // SUMMARY
