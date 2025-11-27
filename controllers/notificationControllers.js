@@ -709,7 +709,7 @@ exports.getAllLiveNotifications = async (req, res) => {
 
     const userObjectId = new mongoose.Types.ObjectId(userId);
 
-    // ✅ STEP 1: GET ALL DATABASE NOTIFICATIONS (INCLUDING FOLLOW REQUESTS & APPROVALS)
+    // ✅ STEP 1: GET ALL DATABASE NOTIFICATIONS
     const query = {
       recipient: userObjectId,
       isDeleted: { $ne: true }
@@ -732,7 +732,6 @@ exports.getAllLiveNotifications = async (req, res) => {
       .lean();
 
     console.log(`✅ DATABASE NOTIFICATIONS: ${allNotifications.length}`);
-    console.log(`📋 Database notification types:`, allNotifications.map(n => n.type));
 
     // ✅ STEP 2: GET UNREAD MESSAGES AS NOTIFICATIONS
     const unreadMessages = await Message.find({
@@ -808,21 +807,14 @@ exports.getAllLiveNotifications = async (req, res) => {
 
     console.log(`👥 FOLLOW REQUESTS: ${followRequestNotifications.length}`);
 
-    // ✅ STEP 4: GET FOLLOW APPROVAL NOTIFICATIONS FROM DATABASE
-    const followApprovalNotifications = allNotifications.filter(n => 
-      n.type === 'follow_approval' || n.type === 'follow_accept'
-    );
-
-    console.log(`✅ FOLLOW APPROVALS from DB: ${followApprovalNotifications.length}`);
-
-    // ✅ STEP 5: GET USER'S POSTS DATA FOR AUTO-GENERATING MISSING NOTIFICATIONS
+    // ✅ STEP 4: GET USER'S POSTS DATA FOR AUTO-GENERATING MISSING NOTIFICATIONS
     const userWithPosts = await Auth.findById(userId)
       .select("fullName posts followers following")
       .populate("followers", "fullName")
       .populate("following", "fullName")
       .lean();
 
-    // ✅ STEP 6: AUTO-CREATE MISSING NOTIFICATIONS IN REAL-TIME
+    // ✅ STEP 5: AUTO-CREATE MISSING NOTIFICATIONS IN REAL-TIME
     const autoCreatedNotifications = [];
 
     if (userWithPosts && userWithPosts.posts) {
@@ -1012,7 +1004,7 @@ exports.getAllLiveNotifications = async (req, res) => {
 
     console.log(`🤖 AUTO-CREATED NOTIFICATIONS: ${autoCreatedNotifications.length}`);
 
-    // ✅ STEP 7: CONVERT MESSAGES TO NOTIFICATION FORMAT
+    // ✅ STEP 6: CONVERT MESSAGES TO NOTIFICATION FORMAT
     const messageNotifications = unreadMessages.map(message => ({
       _id: message._id,
       type: 'message',
@@ -1043,61 +1035,165 @@ exports.getAllLiveNotifications = async (req, res) => {
       }
     }));
 
-    // ✅ STEP 8: COMBINE EVERYTHING
+    // ✅ STEP 7: COMBINE EVERYTHING
     const allItems = [
-      ...allNotifications, // This now includes follow_request and follow_approval from database
+      ...allNotifications,
       ...autoCreatedNotifications,
       ...messageNotifications,
-      ...followRequestNotifications // Fallback for follow requests not in database
+      ...followRequestNotifications
     ];
 
     // Sort by creation date (newest first)
     allItems.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 
     console.log(`📊 FINAL TOTAL: ${allItems.length} items`);
-    console.log(`🔍 Follow-related notifications in final list:`, 
-      allItems.filter(item => 
-        item.type.includes('follow') || item.isFollowRequest
-      ).map(item => ({
-        type: item.type,
-        message: item.message,
-        isFromDatabase: !item.isAutoCreated && !item.isFollowRequest
-      }))
-    );
 
-    // ✅ STEP 9: APPLY PAGINATION
+    // ✅ STEP 8: APPLY PAGINATION
     const skip = (parseInt(page) - 1) * parseInt(limit);
     const limitNum = parseInt(limit);
     const paginatedItems = allItems.slice(skip, skip + limitNum);
 
-    // ✅ STEP 10: CALCULATE STATISTICS
+    // ✅ STEP 9: CALCULATE COMPREHENSIVE COUNTS
     const totalCount = allItems.length;
     const unreadCount = allItems.filter(n => !n.isRead).length;
     const readCount = totalCount - unreadCount;
 
-    // Type breakdown - specifically track follow types
-    const typeStats = allItems.reduce((acc, item) => {
+    // Count by type (including both read and unread)
+    const countsByType = allItems.reduce((acc, item) => {
       const type = item.type;
       if (!acc[type]) {
-        acc[type] = { 
-          total: 0, 
+        acc[type] = {
+          total: 0,
           unread: 0,
-          percentage: 0
+          read: 0
         };
       }
       acc[type].total++;
       if (!item.isRead) {
         acc[type].unread++;
+      } else {
+        acc[type].read++;
       }
       return acc;
     }, {});
 
-    // Calculate percentages
-    Object.keys(typeStats).forEach(type => {
-      typeStats[type].percentage = totalCount > 0 
-        ? Math.round((typeStats[type].total / totalCount) * 100) 
-        : 0;
-    });
+    // Count unread by type
+    const unreadByType = allItems.reduce((acc, item) => {
+      if (!item.isRead) {
+        const type = item.type;
+        acc[type] = (acc[type] || 0) + 1;
+      }
+      return acc;
+    }, {});
+
+    // Count read by type
+    const readByType = allItems.reduce((acc, item) => {
+      if (item.isRead) {
+        const type = item.type;
+        acc[type] = (acc[type] || 0) + 1;
+      }
+      return acc;
+    }, {});
+
+    // ✅ STEP 10: PREPARE COMPREHENSIVE COUNTS OBJECT
+    const comprehensiveCounts = {
+      // Basic counts
+      total: totalCount,
+      unread: unreadCount,
+      read: readCount,
+      
+      // Detailed type counts
+      byType: {
+        // Follow related
+        follow_request: countsByType.follow_request || { total: 0, unread: 0, read: 0 },
+        follow_approval: countsByType.follow_approval || { total: 0, unread: 0, read: 0 },
+        follow: countsByType.follow || { total: 0, unread: 0, read: 0 },
+        
+        // Post related
+        post: countsByType.post || { total: 0, unread: 0, read: 0 },
+        like: countsByType.like || { total: 0, unread: 0, read: 0 },
+        comment: countsByType.comment || { total: 0, unread: 0, read: 0 },
+        mention: countsByType.mention || { total: 0, unread: 0, read: 0 },
+        
+        // Messages
+        message: countsByType.message || { total: 0, unread: 0, read: 0 }
+      },
+      
+      // Unread counts by type (quick access)
+      unreadByType: {
+        follow_request: unreadByType.follow_request || 0,
+        follow_approval: unreadByType.follow_approval || 0,
+        follow: unreadByType.follow || 0,
+        post: unreadByType.post || 0,
+        like: unreadByType.like || 0,
+        comment: unreadByType.comment || 0,
+        mention: unreadByType.mention || 0,
+        message: unreadByType.message || 0
+      },
+      
+      // Read counts by type (quick access)
+      readByType: {
+        follow_request: readByType.follow_request || 0,
+        follow_approval: readByType.follow_approval || 0,
+        follow: readByType.follow || 0,
+        post: readByType.post || 0,
+        like: readByType.like || 0,
+        comment: readByType.comment || 0,
+        mention: readByType.mention || 0,
+        message: readByType.message || 0
+      },
+      
+      // Category summaries
+      summaries: {
+        // Follow category
+        follow: {
+          total: (countsByType.follow_request?.total || 0) + 
+                 (countsByType.follow_approval?.total || 0) + 
+                 (countsByType.follow?.total || 0),
+          unread: (unreadByType.follow_request || 0) + 
+                  (unreadByType.follow_approval || 0) + 
+                  (unreadByType.follow || 0),
+          read: (readByType.follow_request || 0) + 
+                (readByType.follow_approval || 0) + 
+                (readByType.follow || 0)
+        },
+        
+        // Engagement category
+        engagement: {
+          total: (countsByType.like?.total || 0) + 
+                 (countsByType.comment?.total || 0) + 
+                 (countsByType.mention?.total || 0),
+          unread: (unreadByType.like || 0) + 
+                  (unreadByType.comment || 0) + 
+                  (unreadByType.mention || 0),
+          read: (readByType.like || 0) + 
+                (readByType.comment || 0) + 
+                (readByType.mention || 0)
+        },
+        
+        // Content category
+        content: {
+          total: (countsByType.post?.total || 0),
+          unread: (unreadByType.post || 0),
+          read: (readByType.post || 0)
+        },
+        
+        // Communication category
+        communication: {
+          total: (countsByType.message?.total || 0),
+          unread: (unreadByType.message || 0),
+          read: (readByType.message || 0)
+        }
+      },
+      
+      // Source breakdown
+      bySource: {
+        database: allNotifications.length,
+        autoCreated: autoCreatedNotifications.length,
+        messages: messageNotifications.length,
+        followRequests: followRequestNotifications.length
+      }
+    };
 
     // ✅ STEP 11: PREPARE FINAL RESPONSE
     const totalPages = Math.ceil(totalCount / limitNum);
@@ -1106,10 +1202,13 @@ exports.getAllLiveNotifications = async (req, res) => {
 
     const response = {
       success: true,
-      message: `Found ${totalCount} total items (${allNotifications.length} db + ${autoCreatedNotifications.length} auto + ${messageNotifications.length} messages + ${followRequestNotifications.length} follow requests)`,
+      message: `Found ${totalCount} total notifications`,
       data: {
         // MAIN NOTIFICATIONS ARRAY
         notifications: paginatedItems,
+        
+        // COMPREHENSIVE COUNTS
+        counts: comprehensiveCounts,
         
         // BREAKDOWN
         breakdown: {
@@ -1118,13 +1217,7 @@ exports.getAllLiveNotifications = async (req, res) => {
           totalMessages: messageNotifications.length,
           totalFollowRequests: followRequestNotifications.length,
           unreadCount: unreadCount,
-          readCount: readCount,
-          // Specific follow notification counts
-          followNotifications: {
-            requests: allItems.filter(item => item.type === 'follow_request').length,
-            approvals: allItems.filter(item => item.type === 'follow_approval').length,
-            total: allItems.filter(item => item.type.includes('follow')).length
-          }
+          readCount: readCount
         },
         
         // SUMMARY
@@ -1132,7 +1225,7 @@ exports.getAllLiveNotifications = async (req, res) => {
           total: totalCount,
           unread: unreadCount,
           read: readCount,
-          byType: typeStats,
+          byType: countsByType,
           readPercentage: totalCount > 0 ? Math.round((readCount / totalCount) * 100) : 0,
           unreadPercentage: totalCount > 0 ? Math.round((unreadCount / totalCount) * 100) : 0
         },
