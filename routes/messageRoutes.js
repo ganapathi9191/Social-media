@@ -10,7 +10,7 @@ router.post("/chat/get-or-create", messageController.getOrCreateChat);
 // SEND MESSAGE (TEXT/IMAGE/VIDEO)
 router.post(
   "/messages/send",
-  upload.array("media", 10),
+  upload.array("media", 20),
   messageController.sendMessage
 );
 

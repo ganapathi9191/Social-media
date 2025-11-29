@@ -4,263 +4,296 @@ const { sendFollowNotification, sendFollowRequestNotification, sendFollowApprova
 const { uploadImage, uploadToCloudinary, uploadImages, uploadToCloudinarys } = require('../config/cloudinary');
 
 
+
+// ========================================
+// HELPER FUNCTIONS
+// ========================================
+
+// ✅ Convert to ObjectId safely
+// ✅ Simple Safe ObjectId Converter
 const toObjectId = (id) => {
+  if (!id) return null;
   try {
+    if (id instanceof mongoose.Types.ObjectId) return id;
     return new mongoose.Types.ObjectId(id);
   } catch {
-    return id; // fallback for string IDs
-  }
-};
-
-const createNotification = async (recipient, sender, type, postId = null, commentId = null, message = "", options = {}) => {
-  try {
-    const { allowSelf = true, checkPreferences = false } = options;
-
-    console.log(`🔔 Creating notification:`, { 
-      recipient, 
-      sender, 
-      type, 
-      postId, 
-      message 
-    });
-
-    if (!recipient || !sender) {
-      console.warn("createNotification: missing recipient or sender");
-      return null;
-    }
-
-    // Normalize to ObjectId objects when possible
-    const recipientId = toObjectId(recipient);
-    const senderId = toObjectId(sender);
-
-    if (!allowSelf && String(recipientId) === String(senderId)) {
-      console.log("createNotification: skipping self notification");
-      return null;
-    }
-
-    // Optional preferences check
-    if (checkPreferences) {
-      try {
-        const recipientUser = await Auth.findById(recipientId).select("notificationPreferences").lean();
-        if (!recipientUser) {
-          console.log("createNotification: recipient not found");
-          return null;
-        }
-        const prefs = recipientUser.notificationPreferences || {};
-        const prefMap = {
-          post: "posts",
-          follow: "follows",
-          like: "likes",
-          comment: "comments",
-          follow_request: "followRequests",
-          follow_approval: "followApprovals",
-          mention: "mentions",
-          message: "messages"
-        };
-        const prefKey = prefMap[type] || null;
-        if (prefKey && prefs[prefKey] === false) {
-          console.log(`createNotification: recipient preference disables '${type}' notifications`);
-          return null;
-        }
-      } catch (e) {
-        console.warn("createNotification: preference check failed:", e.message);
-      }
-    }
-
-    const payload = {
-      recipient: recipientId,
-      sender: senderId,
-      type,
-      message: message || "New notification",
-      isRead: false,
-      isDeleted: false,
-      createdAt: new Date()
-    };
-
-    if (postId) payload.post = toObjectId(postId);
-    if (commentId) payload.reference = { commentId: toObjectId(commentId) };
-
-    const notification = await Notification.create(payload);
-    console.log(`✅ Notification created:`, notification._id);
-
-    // emit real-time if socket exists
-    const io = global.io;
-    if (io) {
-      try {
-        const populated = await Notification.findById(notification._id)
-          .populate("sender", "fullName profile.username profile.image")
-          .populate("post", "description media userId")
-          .lean();
-        io.to(String(recipientId)).emit("newNotification", populated);
-        console.log(`📡 Real-time notification sent to user: ${recipientId}`);
-      } catch (e) {
-        console.warn("createNotification: emit/populate failed:", e.message);
-      }
-    }
-
-    return notification;
-  } catch (error) {
-    if (error && error.code === 11000) {
-      console.warn("createNotification: duplicate prevented (11000).");
-      return null;
-    }
-    console.error("createNotification error:", error);
     return null;
   }
 };
+// ✅ CRITICAL: Deep clean all corrupted data
+const deepCleanUserData = (user) => {
+  if (!user || !user.posts || !Array.isArray(user.posts)) return user;
+  
+  user.posts = user.posts.map(post => {
+    if (!post) return post;
+    
+    // ✅ Clean likes array - remove ANY corrupted objects
+    if (post.likes && Array.isArray(post.likes)) {
+      post.likes = post.likes
+        .filter(like => {
+          // Remove objects with notificationHandled
+          if (typeof like === 'object' && like !== null && like.notificationHandled !== undefined) {
+            console.log('🧹 Removing corrupted like object with notificationHandled');
+            return false;
+          }
+          // Remove null/undefined
+          if (like === null || like === undefined) {
+            return false;
+          }
+          // Keep only valid ObjectIds
+          return mongoose.Types.ObjectId.isValid(like);
+        })
+        .map(like => {
+          // Extract _id if it's an object
+          if (typeof like === 'object' && like !== null && like._id) {
+            return toObjectId(like._id);
+          }
+          // Convert to ObjectId
+          return toObjectId(like);
+        });
+    } else {
+      // Ensure likes array exists
+      post.likes = [];
+    }
+    
+    // ✅ Clean comments array (remove notificationHandled)
+    if (post.comments && Array.isArray(post.comments)) {
+      post.comments = post.comments.map(comment => {
+        if (comment && typeof comment === 'object') {
+          // Remove notificationHandled from comments
+          if (comment.notificationHandled !== undefined) {
+            delete comment.notificationHandled;
+          }
+        }
+        return comment;
+      });
+    }
+    
+    return post;
+  });
+  
+  return user;
+};
 
-// ------------------ POST CONTROLLERS ------------------
+// ✅ FIXED: Create notification with ULTRA-SAFE duplicate handling
+const createNotificationSafe = async (recipient, sender, type, postId, commentId, message) => {
+  try {
+    // Skip self notifications
+    if (recipient.toString() === sender.toString()) {
+      console.log('⏭️ Skipping self notification');
+      return null;
+    }
+    
+    const recipientId = toObjectId(recipient);
+    const senderId = toObjectId(sender);
+    
+    // ✅ ULTRA-SAFE: Build query without commentId for like notifications
+    const query = {
+      recipient: recipientId,
+      sender: senderId,
+      type: type
+    };
+    
+    if (postId) query.post = toObjectId(postId);
+    
+    // ✅ CRITICAL: Only add commentId for comment-related notifications
+    if (commentId && (type === 'comment' || type === 'mention')) {
+      query['reference.commentId'] = toObjectId(commentId);
+    } else {
+      // For like notifications, explicitly set commentId to null to match index
+      query['reference.commentId'] = null;
+    }
+    
+    // ✅ Use findOneAndUpdate with upsert to avoid duplicates
+    const notification = await Notification.findOneAndUpdate(
+      query,
+      {
+        $setOnInsert: {
+          recipient: recipientId,
+          sender: senderId,
+          type: type,
+          message: message,
+          isRead: false,
+          createdAt: new Date()
+        },
+        // Update existing notification if needed
+        $set: {
+          message: message,
+          updatedAt: new Date()
+        }
+      },
+      {
+        upsert: true,
+        new: true,
+        runValidators: true
+      }
+    );
+    
+    console.log(`✅ Notification handled: ${notification._id}`);
+    
+    // Emit real-time notification only for new ones
+    if (global.io) {
+      const populated = await Notification.findById(notification._id)
+        .populate('sender', 'fullName profile')
+        .lean();
+      global.io.to(recipient.toString()).emit('newNotification', populated);
+    }
+    
+    return notification;
+  } catch (error) {
+    // ✅ Handle duplicate key error gracefully
+    if (error.code === 11000) {
+      console.log('⚠️ Duplicate notification prevented safely');
+      // Try to find the existing notification
+      try {
+        const recipientId = toObjectId(recipient);
+        const senderId = toObjectId(sender);
+        const existing = await Notification.findOne({
+          recipient: recipientId,
+          sender: senderId,
+          type: type,
+          post: postId ? toObjectId(postId) : null
+        });
+        return existing;
+      } catch (findError) {
+        return null;
+      }
+    }
+    console.error('❌ Notification creation error:', error.message);
+    return null;
+  }
+};
+// ✅ Basic Data Cleaner
+const cleanLikesArray = (likes) => {
+  if (!Array.isArray(likes)) return [];
+  
+  return likes
+    .filter(like => mongoose.Types.ObjectId.isValid(like))
+    .map(like => toObjectId(like))
+    .filter(like => like !== null);
+};
 
-// Create a new post with mentions
+// ========================================
+// POST CONTROLLERS
+// ========================================
+
+// ✅ CREATE POST
 exports.createPost = async (req, res) => {
-    try {
+  try {
     const { userId, description } = req.body;
     
-    console.log(`🆕 Creating post for user: ${userId}`, { description });
+    if (!userId) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "userId is required" 
+      });
+    }
     
-    if (!userId) return res.status(400).json({ success: false, message: "userId is required" });
-    if (!mongoose.Types.ObjectId.isValid(userId)) return res.status(400).json({ success: false, message: "Invalid userId" });
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Invalid userId" 
+      });
+    }
 
-    const user = await Auth.findById(userId);
-    if (!user) return res.status(404).json({ success: false, message: "User not found" });
+    let user = await Auth.findById(userId);
+    if (!user) {
+      return res.status(404).json({ 
+        success: false, 
+        message: "User not found" 
+      });
+    }
 
-    console.log(`👤 User found:`, user.fullName, "Followers:", user.followers?.length);
+    // ✅ CRITICAL: Deep clean BEFORE any operations
+    user = deepCleanUserData(user);
 
     // Handle media files
     let mediaFiles = [];
     if (req.files && req.files.length > 0) {
       for (const file of req.files) {
         const url = await uploadImage(file.buffer, "posts", file.originalname);
-        mediaFiles.push({ url, type: file.mimetype && file.mimetype.startsWith("video") ? "video" : "image" });
+        mediaFiles.push({ 
+          url, 
+          type: file.mimetype && file.mimetype.startsWith("video") ? "video" : "image" 
+        });
       }
     }
 
-    // Extract mentions from description
+    // Extract mentions
     const mentionRegex = /@([a-zA-Z0-9._-]+)/g;
     let mentions = [];
     if (description && typeof description === "string") {
       let match;
       while ((match = mentionRegex.exec(description)) !== null) {
-        const username = match[1];
-        const mentionedUser = await Auth.findOne({ "profile.username": { $regex: new RegExp(`^${username}$`, "i") } }).select("_id fullName");
+        const mentionedUser = await Auth.findOne({ 
+          "profile.username": { $regex: new RegExp(`^${match[1]}$`, "i") } 
+        }).select("_id");
+        
         if (mentionedUser) {
-          console.log(`✅ Found mentioned user: ${mentionedUser.fullName} (${mentionedUser._id})`);
           mentions.push(mentionedUser._id);
-        } else {
-          console.log(`❌ Mentioned user not found: ${username}`);
         }
       }
     }
 
-    console.log(`📝 Mentions extracted:`, mentions);
-
+    // Create new post
     const newPost = {
       userId: toObjectId(userId),
       description: description || "",
       media: mediaFiles,
-      mentions: mentions,
-      likes: [],
-      comments: [],
+      mentions: mentions.map(m => toObjectId(m)),
+      likes: [], // ALWAYS initialize as empty array
+      comments: [], // ALWAYS initialize as empty array
       createdAt: new Date(),
       updatedAt: new Date()
     };
 
-    // Initialize posts array if it doesn't exist
-    if (!user.posts) {
-      user.posts = [];
-    }
-
+    if (!user.posts) user.posts = [];
     user.posts.push(newPost);
-    await user.save();
+    
+    user.markModified('posts');
+    await user.save({ validateBeforeSave: true });
 
     const createdPost = user.posts[user.posts.length - 1];
-    console.log(`✅ Post created with ID:`, createdPost._id);
 
-    // 🔥 FIXED: AUTOMATICALLY CREATE NOTIFICATIONS FOR FOLLOWERS
-    if (Array.isArray(user.followers) && user.followers.length > 0) {
-      console.log(`📢 Notifying ${user.followers.length} followers`);
-      
+    // Create notifications for followers
+    if (user.followers && user.followers.length > 0) {
       for (const followerId of user.followers) {
-        try {
-          console.log(`👥 Creating notification for follower: ${followerId}`);
-          
-          // Use the createNotification function directly
-          const notification = await createNotification(
-            followerId.toString(), 
-            userId, 
-            "post", 
-            createdPost._id, 
-            null, 
-            `${user.fullName} created a new post`, 
-            { 
-              allowSelf: false, 
-              checkPreferences: true 
-            }
-          );
-          
-          if (notification) {
-            console.log(`✅ Post notification created for follower ${followerId}:`, notification._id);
-          } else {
-            console.log(`❌ Failed to create post notification for follower ${followerId}`);
-          }
-        } catch (error) {
-          console.error(`🚨 Error creating post notification for follower ${followerId}:`, error.message);
-        }
+        await createNotificationSafe(
+          followerId,
+          userId,
+          'post',
+          createdPost._id,
+          null,
+          `${user.fullName} created a new post`
+        );
       }
-    } else {
-      console.log(`ℹ️ No followers to notify for post`);
     }
 
-    // 🔥 FIXED: AUTOMATICALLY CREATE NOTIFICATIONS FOR MENTIONED USERS
-    if (mentions.length > 0) {
-      console.log(`🔔 Notifying ${mentions.length} mentioned users`);
-      
-      for (const mId of mentions) {
-        try {
-          // Skip if user mentioned themselves
-          if (mId.toString() === userId) continue;
-          
-          console.log(`📍 Creating mention notification for user: ${mId}`);
-          
-          const notification = await createNotification(
-            mId.toString(), 
-            userId, 
-            "mention", 
-            createdPost._id, 
-            null, 
-            `${user.fullName} mentioned you in a post`, 
-            { 
-              allowSelf: true, 
-              checkPreferences: true 
-            }
-          );
-          
-          if (notification) {
-            console.log(`✅ Mention notification created for user ${mId}:`, notification._id);
-          } else {
-            console.log(`❌ Failed to create mention notification for user ${mId}`);
-          }
-        } catch (error) {
-          console.error(`🚨 Error creating mention notification for user ${mId}:`, error.message);
-        }
-      }
-    } else {
-      console.log(`ℹ️ No mentions to notify`);
+    // Create notifications for mentions
+    for (const mentionId of mentions) {
+      await createNotificationSafe(
+        mentionId,
+        userId,
+        'mention',
+        createdPost._id,
+        null,
+        `${user.fullName} mentioned you in a post`
+      );
     }
 
     res.status(201).json({ 
       success: true, 
-      message: 'Post created ✅', 
-      data: createdPost,
-      debug: {
-        followersNotified: user.followers?.length || 0,
-        mentionsNotified: mentions.length,
-        postId: createdPost._id
-      }
+      message: 'Post created successfully', 
+      data: createdPost
     });
+    
   } catch (err) {
-    console.error("🚨 createPost error:", err);
-    res.status(500).json({ success: false, message: "Server error", error: err.message });
+    console.error("❌ createPost error:", err);
+    res.status(500).json({ 
+      success: false, 
+      message: "Server error", 
+      error: err.message 
+    });
   }
 };
 // Get all posts from all users
@@ -452,7 +485,7 @@ exports.updatePostById = async (req, res) => {
 
 // Like/Unlike a post
 exports.toggleLikePost = async (req, res) => {
-  try {
+ try {
     const { postId, userId, postOwnerId } = req.body;
     
     console.log(`❤️ Toggle like:`, { postId, userId, postOwnerId });
@@ -474,18 +507,21 @@ exports.toggleLikePost = async (req, res) => {
       });
     }
 
-    const userObjectId = new mongoose.Types.ObjectId(userId);
-    const postOwnerObjectId = new mongoose.Types.ObjectId(postOwnerId);
-    const postObjectId = new mongoose.Types.ObjectId(postId);
+    const userObjectId = toObjectId(userId);
+    const postOwnerObjectId = toObjectId(postOwnerId);
+    const postObjectId = toObjectId(postId);
 
-    // Find post owner and post
-    const postOwner = await Auth.findById(postOwnerObjectId);
+    // Find post owner
+    let postOwner = await Auth.findById(postOwnerObjectId);
     if (!postOwner) {
       return res.status(404).json({ 
         success: false, 
         message: "Post owner not found" 
       });
     }
+
+    // ✅ CRITICAL: Clean data BEFORE operations
+    postOwner = deepCleanUserData(postOwner);
 
     // Find the specific post
     const post = postOwner.posts.id(postObjectId);
@@ -496,15 +532,26 @@ exports.toggleLikePost = async (req, res) => {
       });
     }
 
-    // ✅ FIXED: Ensure likes array exists and is clean
+    // ✅ CRITICAL: Ensure likes is a clean array
     if (!post.likes || !Array.isArray(post.likes)) {
       post.likes = [];
     }
 
-    // Clean the likes array before processing
-    post.likes = post.likes.filter(like => 
-      like && mongoose.Types.ObjectId.isValid(like)
-    ).map(like => new mongoose.Types.ObjectId(like));
+    // Clean the likes array again to be absolutely sure
+    post.likes = post.likes
+      .filter(like => {
+        if (typeof like === 'object' && like !== null && like.notificationHandled !== undefined) {
+          console.log('🧹 Removing corrupted like during toggle');
+          return false;
+        }
+        return mongoose.Types.ObjectId.isValid(like);
+      })
+      .map(like => {
+        if (typeof like === 'object' && like !== null && like._id) {
+          return toObjectId(like._id);
+        }
+        return toObjectId(like);
+      });
 
     const alreadyLiked = post.likes.some(likeId => 
       likeId.toString() === userObjectId.toString()
@@ -524,7 +571,7 @@ exports.toggleLikePost = async (req, res) => {
 
       console.log(`✅ Post unliked. New likes count:`, post.likes.length);
 
-      // Delete like notification
+      // ✅ FIX: Delete like notification using the same unique query
       try {
         await Notification.findOneAndDelete({
           recipient: postOwnerObjectId,
@@ -534,17 +581,17 @@ exports.toggleLikePost = async (req, res) => {
         });
         console.log(`🔕 Like notification deleted`);
       } catch (notifError) {
-        console.warn(`Warning: Could not delete notification:`, notifError.message);
+        console.log(`ℹ️ No notification to delete or already deleted`);
       }
 
       return res.status(200).json({ 
         success: true, 
-        message: "Post unliked ✅", 
+        message: "Post unliked successfully", 
         likesCount: post.likes.length, 
         liked: false
       });
     } else {
-      // Like the post
+      // Like the post - ONLY add ObjectId
       post.likes.push(userObjectId);
       
       postOwner.markModified('posts');
@@ -552,37 +599,57 @@ exports.toggleLikePost = async (req, res) => {
 
       console.log(`✅ Post liked. New likes count:`, post.likes.length);
 
-      // Create notification (skip if liking own post)
+      // ✅ FIX: Create notification with duplicate check (skip if liking own post)
       if (postOwnerObjectId.toString() !== userObjectId.toString()) {
         try {
           const user = await Auth.findById(userObjectId).select("fullName profile.username");
-          const notification = await createNotification(
-            postOwnerId, 
-            userId, 
-            "like", 
-            postId, 
-            null, 
-            `${user?.fullName || user?.profile?.username || "Someone"} liked your post`, 
-            { allowSelf: false, checkPreferences: true }
-          );
           
-          if (notification) {
-            console.log(`✅ Like notification created:`, notification._id);
+          // ✅ CRITICAL FIX: Check if notification already exists before creating
+          const existingNotification = await Notification.findOne({
+            recipient: postOwnerObjectId,
+            sender: userObjectId,
+            type: "like",
+            post: postObjectId
+          });
+
+          if (!existingNotification) {
+            await Notification.create({
+              recipient: postOwnerObjectId,
+              sender: userObjectId,
+              type: "like",
+              post: postObjectId,
+              message: `${user?.fullName || user?.profile?.username || "Someone"} liked your post`,
+              isRead: false,
+              createdAt: new Date()
+            });
+            console.log(`🔔 Like notification created`);
+          } else {
+            console.log(`ℹ️ Like notification already exists, skipping creation`);
           }
         } catch (notifError) {
-          console.warn(`Warning: Could not create notification:`, notifError.message);
+          console.log(`ℹ️ Could not create notification: ${notifError.message}`);
         }
       }
 
       return res.status(200).json({ 
         success: true, 
-        message: "Post liked ✅", 
+        message: "Post liked successfully", 
         likesCount: post.likes.length, 
         liked: true
       });
     }
   } catch (err) {
     console.error("❌ toggleLikePost error:", err);
+    
+    // ✅ Handle duplicate key error specifically
+    if (err.code === 11000) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Duplicate action detected. Please try again.",
+        error: "Duplicate notification"
+      });
+    }
+    
     res.status(500).json({ 
       success: false, 
       message: "Server error", 
@@ -590,6 +657,7 @@ exports.toggleLikePost = async (req, res) => {
     });
   }
 };
+
 // ✅ Get All Likes for a Post
 exports.getAllLikes = async (req, res) => {
   try {
@@ -642,14 +710,38 @@ exports.addComment = async (req, res) => {
     
     console.log(`💬 Comment action:`, { userId, postId, text });
     
-    if (!userId || !postId || !text) return res.status(400).json({ success: false, message: "userId, postId and text are required" });
-    if (!mongoose.Types.ObjectId.isValid(userId) || !mongoose.Types.ObjectId.isValid(postId)) return res.status(400).json({ success: false, message: "Invalid IDs" });
+    if (!userId || !postId || !text) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "userId, postId and text are required" 
+      });
+    }
+    
+    if (!mongoose.Types.ObjectId.isValid(userId) || !mongoose.Types.ObjectId.isValid(postId)) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Invalid IDs" 
+      });
+    }
 
-    const postOwner = await Auth.findOne({ "posts._id": postId });
-    if (!postOwner) return res.status(404).json({ success: false, message: "Post not found" });
+    let postOwner = await Auth.findOne({ "posts._id": postId });
+    if (!postOwner) {
+      return res.status(404).json({ 
+        success: false, 
+        message: "Post not found" 
+      });
+    }
+
+    // ✅ CRITICAL: Clean data BEFORE operations
+    postOwner = deepCleanUserData(postOwner);
 
     const post = postOwner.posts.id(postId);
-    if (!post) return res.status(404).json({ success: false, message: "Post not found" });
+    if (!post) {
+      return res.status(404).json({ 
+        success: false, 
+        message: "Post not found" 
+      });
+    }
 
     const commenter = await Auth.findById(userId).select("fullName profile.username");
     
@@ -659,7 +751,9 @@ exports.addComment = async (req, res) => {
     let match;
     while ((match = mentionRegex.exec(text)) !== null) {
       const username = match[1];
-      const mentionedUser = await Auth.findOne({ "profile.username": { $regex: new RegExp(`^${username}$`, "i") } }).select("_id fullName");
+      const mentionedUser = await Auth.findOne({ 
+        "profile.username": { $regex: new RegExp(`^${username}$`, "i") } 
+      }).select("_id fullName");
       if (mentionedUser) mentions.push(mentionedUser._id);
     }
 
@@ -668,85 +762,58 @@ exports.addComment = async (req, res) => {
       text: String(text).trim(),
       createdAt: new Date(),
       mentions: mentions
+      // DO NOT add notificationHandled here
     };
 
     post.comments.push(newComment);
-    await postOwner.save();
+    postOwner.markModified('posts');
+    await postOwner.save({ validateBeforeSave: true });
 
     const updatedPost = postOwner.posts.id(postId);
     const savedComment = updatedPost.comments[updatedPost.comments.length - 1];
 
     console.log(`✅ Comment added by ${commenter?.fullName}`);
 
-    // 🔥 FIXED: AUTOMATICALLY CREATE NOTIFICATION FOR POST OWNER
-    // Only create notification if commenter is not the post owner
+    // Create notification for post owner
     if (String(postOwner._id) !== String(userId)) {
-      try {
-        console.log(`📝 Creating comment notification for post owner: ${postOwner._id}`);
-        
-        const notification = await createNotification(
-          postOwner._id.toString(),
-          userId,
-          "comment",
-          postId,
-          savedComment._id,
-          `${commenter?.fullName || 'Someone'} commented on your post: "${text.substring(0, 30)}${text.length > 30 ? '...' : ''}"`,
-          { allowSelf: false, checkPreferences: true }
-        );
-        
-        if (notification) {
-          console.log(`✅ Comment notification created for post owner:`, notification._id);
-        } else {
-          console.log(`❌ Failed to create comment notification for post owner`);
-        }
-      } catch (error) {
-        console.error(`🚨 Error creating comment notification:`, error.message);
-      }
+      await createNotificationSafe(
+        postOwner._id.toString(),
+        userId,
+        "comment",
+        postId,
+        savedComment._id,
+        `${commenter?.fullName || 'Someone'} commented on your post: "${text.substring(0, 30)}${text.length > 30 ? '...' : ''}"`
+      );
     }
 
-    // 🔥 FIXED: AUTOMATICALLY CREATE NOTIFICATIONS FOR MENTIONED USERS IN COMMENT
+    // Create notifications for mentioned users in comment
     if (mentions.length > 0) {
-      console.log(`🔔 Notifying ${mentions.length} mentioned users in comment`);
-      
       for (const mId of mentions) {
-        try {
-          // Skip if user mentioned themselves
-          if (mId.toString() === userId) continue;
-          
-          console.log(`📍 Creating comment mention notification for user: ${mId}`);
-          
-          const notification = await createNotification(
-            mId.toString(),
-            userId,
-            "mention",
-            postId,
-            savedComment._id,
-            `${commenter?.fullName || 'Someone'} mentioned you in a comment: "${text.substring(0, 30)}${text.length > 30 ? '...' : ''}"`,
-            { allowSelf: true, checkPreferences: true }
-          );
-          
-          if (notification) {
-            console.log(`✅ Comment mention notification created for user ${mId}:`, notification._id);
-          } else {
-            console.log(`❌ Failed to create comment mention notification for user ${mId}`);
-          }
-        } catch (error) {
-          console.error(`🚨 Error creating comment mention notification:`, error.message);
-        }
+        if (mId.toString() === userId) continue;
+        
+        await createNotificationSafe(
+          mId.toString(),
+          userId,
+          "mention",
+          postId,
+          savedComment._id,
+          `${commenter?.fullName || 'Someone'} mentioned you in a comment: "${text.substring(0, 30)}${text.length > 30 ? '...' : ''}"`
+        );
       }
     }
 
     res.status(201).json({ 
       success: true, 
       message: "Comment added successfully ✅", 
-      data: savedComment,
-      debug: {
-        mentionsNotified: mentions.length
-      }
+      data: savedComment
     });
   } catch (error) {
-    console.error("addComment error:", error);
-    res.status(500).json({ success: false, message: "Server error", error: error.message });
+    console.error("❌ addComment error:", error);
+    res.status(500).json({ 
+      success: false, 
+      message: "Server error", 
+      error: error.message 
+    });
   }
 };
 
@@ -1220,3 +1287,4 @@ exports.sendMentionNotification = async (senderId, recipientId, postId, messageT
     console.error("Error sending mention notification:", error);
   }
 };
+module.exports.createNotificationSafe = createNotificationSafe;

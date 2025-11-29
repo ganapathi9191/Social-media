@@ -689,7 +689,7 @@ exports.getUnreadCount = async (req, res) => {
  * - pagination & type filter
  */
 exports.getAllLiveNotifications = async (req, res) => {
-   try {
+    try {
     const { userId } = req.params;
     const { 
       page = 1, 
@@ -780,7 +780,8 @@ exports.getAllLiveNotifications = async (req, res) => {
           _id: new mongoose.Types.ObjectId(),
           type: 'follow_request',
           message: `${requester.fullName || 'Someone'} sent you a follow request`,
-          createdAt: requester.createdAt || new Date(),
+          // ✅ FIX: Use current time so it appears at the top
+          createdAt: new Date(),
           isRead: false,
           readAt: null,
           sender: requester,
@@ -799,7 +800,9 @@ exports.getAllLiveNotifications = async (req, res) => {
             isFollowRequest: true
           },
           isFollowRequest: true,
-          isFromDatabase: false
+          isFromDatabase: false,
+          // Store original timestamp for reference
+          originalTimestamp: requester.createdAt
         };
       }
       return null;
@@ -807,204 +810,11 @@ exports.getAllLiveNotifications = async (req, res) => {
 
     console.log(`👥 FOLLOW REQUESTS: ${followRequestNotifications.length}`);
 
-    // ✅ STEP 4: GET USER'S POSTS DATA FOR AUTO-GENERATING MISSING NOTIFICATIONS
-    const userWithPosts = await Auth.findById(userId)
-      .select("fullName posts followers following")
-      .populate("followers", "fullName")
-      .populate("following", "fullName")
-      .lean();
+    // ✅ STEP 4: ONLY INCLUDE DATABASE NOTIFICATIONS (NOT AUTO-CREATED)
+    // This ensures real-time notifications from the database are shown correctly
+    // Auto-creation should only happen when notifications are missing, not every time
 
-    // ✅ STEP 5: AUTO-CREATE MISSING NOTIFICATIONS IN REAL-TIME
-    const autoCreatedNotifications = [];
-
-    if (userWithPosts && userWithPosts.posts) {
-      console.log(`📝 AUTO-CREATING NOTIFICATIONS FOR ${userWithPosts.posts.length} POSTS`);
-
-      for (const post of userWithPosts.posts) {
-        // A. Create POST notifications for followers (if any)
-        if (userWithPosts.followers && userWithPosts.followers.length > 0) {
-          for (const follower of userWithPosts.followers) {
-            const postNotifExists = allNotifications.find(n => 
-              n.type === 'post' && 
-              n.post && n.post._id.toString() === post._id.toString() &&
-              n.sender && n.sender._id.toString() === userWithPosts._id.toString() &&
-              n.recipient.toString() === follower._id.toString()
-            );
-
-            if (!postNotifExists) {
-              autoCreatedNotifications.push({
-                _id: new mongoose.Types.ObjectId(),
-                type: 'post',
-                message: `${userWithPosts.fullName} created a new post`,
-                createdAt: post.createdAt,
-                isRead: false,
-                sender: {
-                  _id: userWithPosts._id,
-                  fullName: userWithPosts.fullName,
-                  profile: userWithPosts.profile
-                },
-                post: {
-                  _id: post._id,
-                  description: post.description,
-                  media: post.media || [],
-                  userId: userWithPosts._id
-                },
-                metadata: {
-                  isActionable: false,
-                  requiresResponse: false,
-                  canViewPost: true,
-                  priority: 'normal',
-                  hasPost: true,
-                  hasComment: false,
-                  isMessage: false,
-                  isAutoCreated: true
-                },
-                isAutoCreated: true
-              });
-            }
-          }
-        }
-
-        // B. Create COMMENT notifications (if any comments exist)
-        if (post.comments && post.comments.length > 0) {
-          for (const comment of post.comments) {
-            const commentNotifExists = allNotifications.find(n => 
-              n.type === 'comment' && 
-              n.post && n.post._id.toString() === post._id.toString() &&
-              n.reference && n.reference.commentId && n.reference.commentId.toString() === comment._id.toString()
-            );
-
-            if (!commentNotifExists && comment.userId.toString() !== userWithPosts._id.toString()) {
-              const commenter = await Auth.findById(comment.userId).select("fullName profile").lean();
-              autoCreatedNotifications.push({
-                _id: new mongoose.Types.ObjectId(),
-                type: 'comment',
-                message: `${commenter?.fullName || 'Someone'} commented on your post: "${comment.text?.substring(0, 30)}${comment.text?.length > 30 ? '...' : ''}"`,
-                createdAt: comment.createdAt,
-                isRead: false,
-                sender: commenter ? {
-                  _id: commenter._id,
-                  fullName: commenter.fullName,
-                  profile: commenter.profile
-                } : null,
-                post: {
-                  _id: post._id,
-                  description: post.description,
-                  media: post.media || [],
-                  userId: userWithPosts._id
-                },
-                reference: {
-                  commentId: comment._id
-                },
-                metadata: {
-                  isActionable: true,
-                  requiresResponse: false,
-                  canViewPost: true,
-                  priority: 'normal',
-                  hasPost: true,
-                  hasComment: true,
-                  isMessage: false,
-                  isAutoCreated: true
-                },
-                isAutoCreated: true
-              });
-            }
-          }
-        }
-
-        // C. Create MENTION notifications (if any mentions exist)
-        if (post.mentions && post.mentions.length > 0) {
-          for (const mentionedUserId of post.mentions) {
-            const mentionNotifExists = allNotifications.find(n => 
-              n.type === 'mention' && 
-              n.post && n.post._id.toString() === post._id.toString() &&
-              n.recipient.toString() === mentionedUserId.toString()
-            );
-
-            if (!mentionNotifExists && mentionedUserId.toString() !== userWithPosts._id.toString()) {
-              const mentionedUser = await Auth.findById(mentionedUserId).select("fullName profile").lean();
-              autoCreatedNotifications.push({
-                _id: new mongoose.Types.ObjectId(),
-                type: 'mention',
-                message: `${userWithPosts.fullName} mentioned you in a post: "${post.description?.substring(0, 30)}${post.description?.length > 30 ? '...' : ''}"`,
-                createdAt: post.createdAt,
-                isRead: false,
-                sender: {
-                  _id: userWithPosts._id,
-                  fullName: userWithPosts.fullName,
-                  profile: userWithPosts.profile
-                },
-                post: {
-                  _id: post._id,
-                  description: post.description,
-                  media: post.media || [],
-                  userId: userWithPosts._id
-                },
-                metadata: {
-                  isActionable: true,
-                  requiresResponse: false,
-                  canViewPost: true,
-                  priority: 'normal',
-                  hasPost: true,
-                  hasComment: false,
-                  isMessage: false,
-                  isAutoCreated: true
-                },
-                isAutoCreated: true
-              });
-            }
-          }
-        }
-
-        // D. Create LIKE notifications (if any likes exist)
-        if (post.likes && post.likes.length > 0) {
-          for (const likerId of post.likes) {
-            const likeNotifExists = allNotifications.find(n => 
-              n.type === 'like' && 
-              n.post && n.post._id.toString() === post._id.toString() &&
-              n.sender && n.sender._id.toString() === likerId.toString()
-            );
-
-            if (!likeNotifExists && likerId.toString() !== userWithPosts._id.toString()) {
-              const liker = await Auth.findById(likerId).select("fullName profile").lean();
-              autoCreatedNotifications.push({
-                _id: new mongoose.Types.ObjectId(),
-                type: 'like',
-                message: `${liker?.fullName || 'Someone'} liked your post`,
-                createdAt: post.updatedAt,
-                isRead: false,
-                sender: liker ? {
-                  _id: liker._id,
-                  fullName: liker.fullName,
-                  profile: liker.profile
-                } : null,
-                post: {
-                  _id: post._id,
-                  description: post.description,
-                  media: post.media || [],
-                  userId: userWithPosts._id
-                },
-                metadata: {
-                  isActionable: true,
-                  requiresResponse: false,
-                  canViewPost: true,
-                  priority: 'normal',
-                  hasPost: true,
-                  hasComment: false,
-                  isMessage: false,
-                  isAutoCreated: true
-                },
-                isAutoCreated: true
-              });
-            }
-          }
-        }
-      }
-    }
-
-    console.log(`🤖 AUTO-CREATED NOTIFICATIONS: ${autoCreatedNotifications.length}`);
-
-    // ✅ STEP 6: CONVERT MESSAGES TO NOTIFICATION FORMAT
+    // ✅ STEP 5: CONVERT MESSAGES TO NOTIFICATION FORMAT
     const messageNotifications = unreadMessages.map(message => ({
       _id: message._id,
       type: 'message',
@@ -1035,25 +845,36 @@ exports.getAllLiveNotifications = async (req, res) => {
       }
     }));
 
-    // ✅ STEP 7: COMBINE EVERYTHING
+    // ✅ STEP 6: COMBINE EVERYTHING (WITHOUT AUTO-CREATED NOTIFICATIONS)
     const allItems = [
       ...allNotifications,
-      ...autoCreatedNotifications,
       ...messageNotifications,
       ...followRequestNotifications
     ];
 
-    // Sort by creation date (newest first)
-    allItems.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    // ✅ CRITICAL FIX: Sort by creation date (newest first)
+    allItems.sort((a, b) => {
+      const dateA = new Date(a.createdAt);
+      const dateB = new Date(b.createdAt);
+      return dateB - dateA; // Descending order (newest first)
+    });
 
     console.log(`📊 FINAL TOTAL: ${allItems.length} items`);
+    
+    // Debug: Log top 5 items to verify ordering
+    if (allItems.length > 0) {
+      console.log(`\n🔍 TOP 5 NOTIFICATIONS (NEWEST FIRST):`);
+      allItems.slice(0, 5).forEach((item, idx) => {
+        console.log(`${idx + 1}. [${item.type}] ${item.message} - ${new Date(item.createdAt).toISOString()}`);
+      });
+    }
 
-    // ✅ STEP 8: APPLY PAGINATION
+    // ✅ STEP 7: APPLY PAGINATION
     const skip = (parseInt(page) - 1) * parseInt(limit);
     const limitNum = parseInt(limit);
     const paginatedItems = allItems.slice(skip, skip + limitNum);
 
-    // ✅ STEP 9: CALCULATE COMPREHENSIVE COUNTS
+    // ✅ STEP 8: CALCULATE COMPREHENSIVE COUNTS
     const totalCount = allItems.length;
     const unreadCount = allItems.filter(n => !n.isRead).length;
     const readCount = totalCount - unreadCount;
@@ -1095,7 +916,7 @@ exports.getAllLiveNotifications = async (req, res) => {
       return acc;
     }, {});
 
-    // ✅ STEP 10: PREPARE COMPREHENSIVE COUNTS OBJECT
+    // ✅ STEP 9: PREPARE COMPREHENSIVE COUNTS OBJECT
     const comprehensiveCounts = {
       // Basic counts
       total: totalCount,
@@ -1189,13 +1010,13 @@ exports.getAllLiveNotifications = async (req, res) => {
       // Source breakdown
       bySource: {
         database: allNotifications.length,
-        autoCreated: autoCreatedNotifications.length,
+        autoCreated: 0, // Removed auto-creation
         messages: messageNotifications.length,
         followRequests: followRequestNotifications.length
       }
     };
 
-    // ✅ STEP 11: PREPARE FINAL RESPONSE
+    // ✅ STEP 10: PREPARE FINAL RESPONSE
     const totalPages = Math.ceil(totalCount / limitNum);
     const hasNextPage = page < totalPages;
     const hasPrevPage = page > 1;
@@ -1213,7 +1034,7 @@ exports.getAllLiveNotifications = async (req, res) => {
         // BREAKDOWN
         breakdown: {
           totalDatabaseNotifications: allNotifications.length,
-          totalAutoCreated: autoCreatedNotifications.length,
+          totalAutoCreated: 0, // Removed auto-creation
           totalMessages: messageNotifications.length,
           totalFollowRequests: followRequestNotifications.length,
           unreadCount: unreadCount,

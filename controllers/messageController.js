@@ -252,6 +252,7 @@ exports.getUserChats = async (req, res) => {
   try {
     const { userId } = req.params;
 
+    // ✅ Sort by updatedAt DESC to show latest chats first
     const chats = await Chat.find({
       participants: userId,
       isBlocked: false
@@ -264,7 +265,8 @@ exports.getUserChats = async (req, res) => {
           select: 'fullName profile.username profile.image'
         }
       })
-      .sort({ updatedAt: -1 });
+      .sort({ updatedAt: -1 }) // ✅ NEWEST FIRST
+      .lean();
 
     // Get unread count for each chat
     const chatsWithUnread = await Promise.all(
@@ -276,21 +278,51 @@ exports.getUserChats = async (req, res) => {
           deletedFor: { $ne: userId }
         });
 
+        // ✅ Format last message properly
+        let lastMessageFormatted = null;
+        if (chat.lastMessage) {
+          lastMessageFormatted = {
+            _id: chat.lastMessage._id,
+            text: chat.lastMessage.content?.text || '',
+            mediaUrl: chat.lastMessage.content?.mediaUrl || [],
+            type: chat.lastMessage.type || 'text',
+            sender: chat.lastMessage.sender,
+            receiver: chat.lastMessage.receiver,
+            isRead: chat.lastMessage.isRead,
+            createdAt: chat.lastMessage.createdAt
+          };
+        }
+
         return {
-          ...chat.toObject(),
-          unreadCount
+          _id: chat._id,
+          participants: chat.participants,
+          lastMessage: lastMessageFormatted,
+          unreadCount,
+          isBlocked: chat.isBlocked,
+          blockedBy: chat.blockedBy,
+          createdAt: chat.createdAt,
+          updatedAt: chat.updatedAt
         };
       })
     );
 
+    // ✅ Sort again by updatedAt (in case async operations changed order)
+    chatsWithUnread.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+
     res.status(200).json({
       success: true,
-      message: 'Chats retrieved successfully',
-      data: chatsWithUnread
+      message: 'Chats retrieved successfully (sorted by latest)',
+      data: chatsWithUnread,
+      count: chatsWithUnread.length
     });
 
   } catch (error) {
-    res.status(500).json({ success: false, message: 'Server error', error: error.message });
+    console.error('getUserChats error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Server error', 
+      error: error.message 
+    });
   }
 };
 
@@ -588,19 +620,16 @@ exports.getUnreadCountPerChat = async (req, res) => {
 ============================================================ */
 exports.getLastMessage = async (req, res) => {
   try {
-    const { chatId, senderId, receiverId } = req.query;
+    const { chatId } = req.params;
 
-    let filter = {};
-    if (chatId) {
-      filter.chatId = chatId;
-    } else {
-      filter.$or = [
-        { sender: senderId, receiver: receiverId },
-        { sender: receiverId, receiver: senderId },
-      ];
+    if (!chatId) {
+      return res.status(400).json({
+        success: false,
+        message: "Chat ID is required",
+      });
     }
 
-    const lastMessage = await Message.findOne(filter)
+    const lastMessage = await Message.findOne({ chatId })
       .populate("sender", "fullName profile.username profile.image")
       .populate("receiver", "fullName profile.username profile.image")
       .sort({ createdAt: -1 })
@@ -609,7 +638,7 @@ exports.getLastMessage = async (req, res) => {
     if (!lastMessage) {
       return res.status(404).json({
         success: false,
-        message: "No messages found between these users",
+        message: "No messages found for this chat",
       });
     }
 
