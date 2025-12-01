@@ -21,7 +21,7 @@ router.get("/messages/:chatId", messageController.getMessages);
 router.get("/messages/search/:chatId", messageController.searchMessages);
 
 // LAST MESSAGE
-router.get("/messages/last", messageController.getLastMessage);
+router.get("/messages/last/:chatId", messageController.getLastMessage);
 
 // READ / DELIVERY
 router.post("/messages/mark-read", messageController.markAsRead);
