@@ -1565,74 +1565,150 @@ exports.markAllAsRead = async (req, res) => {
  * deleteNotification - deletes notification and optionally source data (comment/like/mention)
  */
 exports.deleteNotification = async (req, res) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
+   const session = await mongoose.startSession();
+  
   try {
+    await session.startTransaction();
     const { notificationId } = req.params;
+    
     if (!mongoose.Types.ObjectId.isValid(notificationId)) {
-      await session.abortTransaction(); session.endSession();
-      return res.status(400).json({ success: false, message: "Invalid notificationId" });
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ 
+        success: false, 
+        message: "Invalid notificationId" 
+      });
     }
 
     const notification = await Notification.findById(notificationId).session(session);
+    
     if (!notification) {
-      await session.abortTransaction(); session.endSession();
-      return res.status(404).json({ success: false, message: "Notification not found" });
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(404).json({ 
+        success: false, 
+        message: "Notification not found" 
+      });
     }
 
-    // Delete related source data for comment/like/mention etc.
-    if (notification.type === "comment" && notification.reference?.commentId && notification.post) {
-      await Auth.findOneAndUpdate(
-        { "posts._id": notification.post },
-        { $pull: { "posts.$.comments": { _id: notification.reference.commentId } } },
-        { session }
-      );
+    console.log(`🗑️ Deleting notification: ${notification.type} (${notificationId})`);
+
+    // Delete related source data based on notification type
+    switch (notification.type) {
+      case "comment":
+        if (notification.reference?.commentId && notification.post) {
+          await Auth.findOneAndUpdate(
+            { "posts._id": notification.post },
+            { $pull: { "posts.$.comments": { _id: notification.reference.commentId } } },
+            { session }
+          );
+          console.log(`✅ Removed comment: ${notification.reference.commentId}`);
+        }
+        break;
+
+      case "like":
+        if (notification.post && notification.sender) {
+          await Auth.findOneAndUpdate(
+            { "posts._id": notification.post },
+            { $pull: { "posts.$.likes": new mongoose.Types.ObjectId(notification.sender) } },
+            { session }
+          );
+          console.log(`✅ Removed like from post: ${notification.post}`);
+        }
+        break;
+
+      case "mention":
+        if (notification.post && notification.recipient) {
+          await Auth.findOneAndUpdate(
+            { "posts._id": notification.post },
+            { $pull: { "posts.$.mentions": new mongoose.Types.ObjectId(notification.recipient) } },
+            { session }
+          );
+          console.log(`✅ Removed mention from post: ${notification.post}`);
+        }
+        break;
+
+      case "follow_request":
+        if (notification.sender && notification.recipient) {
+          // Remove from followerRequests array
+          await Auth.findByIdAndUpdate(
+            notification.recipient,
+            { $pull: { followerRequests: new mongoose.Types.ObjectId(notification.sender) } },
+            { session }
+          );
+          console.log(`✅ Removed follow request from user: ${notification.recipient}`);
+        }
+        break;
+
+      case "follow":
+        if (notification.sender && notification.recipient) {
+          // Remove follower-following relationship
+          await Auth.findByIdAndUpdate(
+            notification.recipient,
+            { $pull: { followers: new mongoose.Types.ObjectId(notification.sender) } },
+            { session }
+          );
+          
+          await Auth.findByIdAndUpdate(
+            notification.sender,
+            { $pull: { following: new mongoose.Types.ObjectId(notification.recipient) } },
+            { session }
+          );
+          console.log(`✅ Removed follow relationship between ${notification.sender} and ${notification.recipient}`);
+        }
+        break;
+
+      case "message":
+        if (notification.reference?.messageId) {
+          // Mark message as read instead of deleting it
+          await Message.findByIdAndUpdate(
+            notification.reference.messageId,
+            { isRead: true, readAt: new Date() },
+            { session }
+          );
+          console.log(`✅ Marked message as read: ${notification.reference.messageId}`);
+          
+          // Note: We don't delete messages, just mark them as read
+          // If you want to actually delete messages, use:
+          // await Message.findByIdAndDelete(notification.reference.messageId).session(session);
+        }
+        break;
+
+      default:
+        console.log(`ℹ️ No special handling for notification type: ${notification.type}`);
+        break;
     }
 
-    if (notification.type === "like" && notification.post && notification.sender) {
-      await Auth.findOneAndUpdate(
-        { "posts._id": notification.post },
-        { $pull: { "posts.$.likes": mongoose.Types.ObjectId(notification.sender) } },
-        { session }
-      );
-    }
-
-    if (notification.type === "mention" && notification.post && notification.recipient) {
-      await Auth.findOneAndUpdate(
-        { "posts._id": notification.post },
-        { $pull: { "posts.$.mentions": mongoose.Types.ObjectId(notification.recipient) } },
-        { session }
-      );
-    }
-
-    if (notification.type === "follow_request" && notification.sender && notification.recipient) {
-      await Auth.findByIdAndUpdate(notification.recipient, { $pull: { followerRequests: mongoose.Types.ObjectId(notification.sender) } }, { session });
-    }
-
-    if (notification.type === "follow" && notification.sender && notification.recipient) {
-      await Auth.findByIdAndUpdate(notification.recipient, { $pull: { followers: mongoose.Types.ObjectId(notification.sender) } }, { session });
-      await Auth.findByIdAndUpdate(notification.sender, { $pull: { following: mongoose.Types.ObjectId(notification.recipient) } }, { session });
-    }
-
-    if (notification.type === "message" && notification.reference?.chatId) {
-      await Message.findByIdAndDelete(notification.reference.chatId).session(session);
-    }
-
-    await Notification.findByIdAndDelete(notificationId).session(session);
+    // Soft delete the notification (set isDeleted to true)
+    // OR completely delete it:
+    const deletedNotification = await Notification.findByIdAndDelete(
+      notificationId,
+      { session }
+    );
 
     await session.commitTransaction();
     session.endSession();
 
-    res.status(200).json({ success: true, message: "Notification and source data deleted successfully ✅", data: { deletedNotificationId: notificationId } });
+    res.status(200).json({ 
+      success: true, 
+      message: "Notification deleted successfully ✅", 
+      data: { 
+        deletedNotificationId: notificationId,
+        type: notification.type
+      } 
+    });
 
   } catch (error) {
     await session.abortTransaction();
     session.endSession();
-    console.error("deleteNotification error:", error);
-    res.status(500).json({ success: false, message: "Server error", error: error.message });
+    console.error("❌ deleteNotification error:", error);
+    res.status(500).json({ 
+      success: false, 
+      message: "Server error while deleting notification", 
+      error: error.message 
+    });
   }
 };
-
 /**
  * getUnreadCount
  */
