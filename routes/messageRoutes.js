@@ -20,6 +20,9 @@ router.get("/messages/:chatId", messageController.getMessages);
 // SEARCH
 router.get("/messages/search/:chatId", messageController.searchMessages);
 
+router.get("/chat/all/:userId", messageController.getAllChatsByUserId);
+
+
 // LAST MESSAGE
 router.get("/messages/last/:chatId", messageController.getLastMessage);
 

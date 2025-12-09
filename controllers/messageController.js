@@ -615,6 +615,129 @@ exports.getUnreadCountPerChat = async (req, res) => {
   }
 };
 
+
+/* ============================================================
+   GET ALL CHATS BY USER ID (LATEST FIRST + ONLINE STATUS)
+============================================================ */
+exports.getAllChatsByUserId = async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    if (!userId) {
+      return res.status(400).json({
+        success: false,
+        message: "User ID is required",
+      });
+    }
+
+    // Fetch chats for this user
+    const chats = await Chat.find({
+      participants: userId
+    })
+      .populate("participants", "fullName profile.username profile.image")
+      .populate({
+        path: "lastMessage",
+        populate: {
+          path: "sender receiver",
+          select: "fullName profile.username profile.image"
+        }
+      })
+      .sort({ updatedAt: -1 })
+      .lean();
+
+    const formattedChats = await Promise.all(
+      chats.map(async (chat) => {
+
+        // ---------------------------------------------------------
+        // UNREAD MESSAGES
+        // ---------------------------------------------------------
+        const unreadCount = await Message.countDocuments({
+          chatId: chat._id,
+          receiver: userId,
+          isRead: false,
+          deletedFor: { $ne: userId }
+        });
+
+        // ---------------------------------------------------------
+        // LAST MESSAGE
+        // ---------------------------------------------------------
+        let lastMessage = null;
+
+        if (chat.lastMessage) {
+          lastMessage = {
+            _id: chat.lastMessage._id,
+            text: chat.lastMessage.content?.text || "",
+            mediaUrl: chat.lastMessage.content?.mediaUrl || [],
+            type: chat.lastMessage.type || "text",
+            sender: chat.lastMessage.sender,
+            receiver: chat.lastMessage.receiver,
+            createdAt: chat.lastMessage.createdAt,
+            isRead: chat.lastMessage.isRead
+          };
+        } else {
+          // fallback find last message
+          const fallback = await Message.findOne({ chatId: chat._id })
+            .sort({ createdAt: -1 })
+            .populate("sender receiver", "fullName profile.username profile.image");
+
+          if (fallback) {
+            lastMessage = {
+              _id: fallback._id,
+              text: fallback.content?.text || "",
+              mediaUrl: fallback.content?.mediaUrl || [],
+              type: fallback.type,
+              sender: fallback.sender,
+              receiver: fallback.receiver,
+              createdAt: fallback.createdAt,
+              isRead: fallback.isRead
+            };
+          }
+        }
+
+        // ---------------------------------------------------------
+        // ONLINE STATUS USING GLOBAL onlineUsers Map
+        // ---------------------------------------------------------
+        let otherUser = chat.participants.find(p => p._id.toString() !== userId);
+        const isOnline = global.onlineUsers.has(otherUser._id.toString());
+        const lastSeen = global.lastSeen.get(otherUser._id.toString()) || null;
+
+        return {
+          _id: chat._id,
+          participants: chat.participants,
+          lastMessage,
+          unreadCount,
+          isBlocked: chat.isBlocked,
+          blockedBy: chat.blockedBy,
+          isOnline,
+          lastSeen,
+          createdAt: chat.createdAt,
+          updatedAt: chat.updatedAt,
+        };
+
+      })
+    );
+
+    // Re-sort after async processing
+    formattedChats.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+
+    res.status(200).json({
+      success: true,
+      message: "Chats retrieved successfully",
+      count: formattedChats.length,
+      data: formattedChats
+    });
+
+  } catch (error) {
+    console.error("getAllChatsByUserId Error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: error.message
+    });
+  }
+};
+
+
 /* ============================================================
    GET LAST MESSAGE BETWEEN TWO USERS
 ============================================================ */
