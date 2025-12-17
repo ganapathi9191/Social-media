@@ -305,7 +305,7 @@ router.get("/spin/summary/:userId", spinCtrl.todaySpinSummary);
 router.get("/wallet/:userId", spinCtrl.getWalletByUserId);
 router.get("/wallet/:userId/history", spinCtrl.getWalletHistory);
 
-
+ 
 
 
 module.exports = router;
