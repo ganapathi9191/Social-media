@@ -191,13 +191,28 @@ exports.verifyOtp = async (req, res) => {
         mentions: true
       }
     });
-
+      /* 🎁 CREATE WALLET WITH 10 COINS */
+    const wallet = await Wallet.create({
+      userId: user._id,
+      coins: 10,
+      history: [{
+        type: "bonus",
+        coins: 10,
+        message: "Welcome bonus 🎁"
+      }]
+    });
+     user.wallet = wallet._id;
+    await user.save();
     const authToken = generateToken({ userId: user._id });
 
     res.status(200).json({
       success: true,
       message: 'OTP verified. User registered successfully.',
-      data: { userId: user._id, token: authToken }
+      data: {
+        userId: user._id,
+        walletCoins: 10,
+        token: authToken
+      }
     });
 
   } catch (err) {
@@ -265,7 +280,8 @@ exports.verifyLoginOtp = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Invalid OTP.' });
     }
 
-    const user = await Auth.findById(userId);
+      // Fetch user WITH wallet
+    const user = await Auth.findById(userId).populate("wallet");
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found.' });
     }
@@ -273,7 +289,7 @@ exports.verifyLoginOtp = async (req, res) => {
     if (!user.accountStatus.isActive) {
       return res.status(403).json({ success: false, message: 'Account is deactivated.' });
     }
-
+     
     // Generate final auth token
     const authToken = generateToken({ userId: user._id });
 
@@ -287,6 +303,7 @@ exports.verifyLoginOtp = async (req, res) => {
         email: user.email || null,
         mobile: user.mobile || null,
         gender: user.gender || null,
+        walletCoins: user.wallet?.coins || 0,
         token: authToken
       }
     });
@@ -317,26 +334,91 @@ exports.getAllUsers = async (req, res) => {
 };
 
 // Get user by ID
+
 exports.getUserById = async (req, res) => {
   try {
     const { userId } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(userId))
-      return res.status(400).json({ success: false, message: "Invalid userId" });
 
+    // Validate ObjectId
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid userId"
+      });
+    }
+
+    // Fetch user with wallet + friends
     const user = await Auth.findById(userId)
-      .select("fullName email mobile profile personalInfo accountStatus privacy notificationPreferences createdAt updatedAt");
+      .select(`
+        fullName
+        email
+        mobile
+        gender
+        profile
+        personalInfo
+        accountStatus
+        privacy
+        notificationPreferences
+        wallet
+        friends
+        createdAt
+        updatedAt
+      `)
+      .populate("wallet", "coins")
+      .populate("friends", "fullName profile.username profile.image");
 
-    if (!user) return res.status(404).json({ success: false, message: "User not found" });
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found"
+      });
+    }
 
-    res.status(200).json({
+    // Format response
+    const response = {
+      _id: user._id,
+      fullName: user.fullName,
+      email: user.email || null,
+      mobile: user.mobile || null,
+      gender: user.gender || null,
+
+      profile: user.profile || {},
+      personalInfo: user.personalInfo || {},
+
+      wallet: {
+        coins: user.wallet?.coins || 0
+      },
+
+      friends: user.friends?.map(f => ({
+        _id: f._id,
+        fullName: f.fullName,
+        username: f.profile?.username || null,
+        image: f.profile?.image || null
+      })) || [],
+
+      accountStatus: user.accountStatus,
+      privacy: user.privacy,
+      notificationPreferences: user.notificationPreferences,
+
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt
+    };
+
+    return res.status(200).json({
       success: true,
       message: "User fetched successfully ✅",
-      data: user,
+      data: response
     });
+
   } catch (error) {
-    res.status(500).json({ success: false, message: "Server error", error: error.message });
+    return res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: error.message
+    });
   }
 };
+
 
 
 
@@ -377,14 +459,6 @@ exports.getUserStatistics = async (req, res) => {
     res.status(500).json({ success: false, message: "Server error", error: error.message });
   }
 };
-
-
-
-
-
-
-
-
 
 
 

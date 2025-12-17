@@ -6,7 +6,7 @@ const campaign =require("../controllers/campaignController");
 const notification =require("../controllers/notificationControllers");
 const followController =require("../controllers/followController");
 const postController =require('../controllers/postController');
-
+const spinCtrl = require("../controllers/spinController");
 
 
 
@@ -292,6 +292,20 @@ router.get("/all-forms", campaign.getAllFormFills);           // Get all forms
 router.get("/form/:id", campaign.getFormFillById);       // Get form by ID
 router.put("/form/:id", campaign.updateFormFillById);    // Update form by ID
 router.delete("/form/:id", campaign.deleteFormFillById); // Delete form by ID
+
+
+// routes/spinRoutes
+router.post("/spin", spinCtrl.spinWheel);
+router.get("/spin/:spinId", spinCtrl.getSpinById);
+router.get("/spin/user/:userId", spinCtrl.getUserSpins);
+router.get("/spin/user/:userId/today", spinCtrl.getTodayUserSpins);
+router.put("/spin/:spinId", spinCtrl.updateSpin);
+router.delete("/spin/:spinId", spinCtrl.deleteSpin);
+router.get("/spin/summary/:userId", spinCtrl.todaySpinSummary);
+router.get("/wallet/:userId", spinCtrl.getWalletByUserId);
+router.get("/wallet/:userId/history", spinCtrl.getWalletHistory);
+
+
 
 
 module.exports = router;

@@ -33,9 +33,10 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // MongoDB connection
+// mongo
 mongoose.connect(process.env.MONGO_URI)
-  .then(() => console.log('✅ MongoDB Connected'))
-  .catch(err => console.error('❌ Mongo Error:', err));
+  .then(() => console.log("✅ MongoDB Connected"))
+  .catch(err => console.error(err));
 
 // Routes
 app.use("/api", authRoutes);
@@ -356,12 +357,14 @@ app.use((req, res) => {
 });
 
 // Start server
-const PORT = process.env.PORT || 5000;
-server.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`📡 Socket.IO enabled for chat features`);
-  console.log(`🌐 Environment: ${process.env.NODE_ENV || 'development'}`);
-});
+const PORT = process.env.PORT || 5002;
+
+if (require.main === module) {
+  server.listen(PORT, () => {
+    console.log(`🚀 Server running on port ${PORT}`);
+    console.log(`📡 Socket.IO enabled for chat features`);
+  });
+}
 
 // Graceful shutdown
 process.on('SIGTERM', () => {
