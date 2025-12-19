@@ -5,6 +5,8 @@ const cors = require('cors');
 const dotenv = require('dotenv');
 const authRoutes = require("./routes/authRoutes");
 const messageRoutes = require("./routes/messageRoutes");
+const coinRoutes =require("./routes/coinRoutes")
+
 
 dotenv.config();
 
@@ -41,6 +43,7 @@ mongoose.connect(process.env.MONGO_URI)
 // Routes
 app.use("/api", authRoutes);
 app.use("/api", messageRoutes);
+app.use("/api",coinRoutes);
 
 // Health check route
 app.get('/', (req, res) => {
