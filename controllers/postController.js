@@ -1,7 +1,8 @@
 const mongoose = require("mongoose");
-const { Auth,Notification } = require('../models/authModel');
+const { Auth, Notification } = require('../models/authModel');
 const { sendFollowNotification, sendFollowRequestNotification, sendFollowApprovalNotification } = require('./notificationControllers');
 const { uploadImage, uploadToCloudinary, uploadImages, uploadToCloudinarys } = require('../config/cloudinary');
+const { rewardPostCoin } = require("../utils/walletPostReward");
 
 
 
@@ -23,10 +24,10 @@ const toObjectId = (id) => {
 // ✅ CRITICAL: Deep clean all corrupted data
 const deepCleanUserData = (user) => {
   if (!user || !user.posts || !Array.isArray(user.posts)) return user;
-  
+
   user.posts = user.posts.map(post => {
     if (!post) return post;
-    
+
     // ✅ Clean likes array - remove ANY corrupted objects
     if (post.likes && Array.isArray(post.likes)) {
       post.likes = post.likes
@@ -55,7 +56,7 @@ const deepCleanUserData = (user) => {
       // Ensure likes array exists
       post.likes = [];
     }
-    
+
     // ✅ Clean comments array (remove notificationHandled)
     if (post.comments && Array.isArray(post.comments)) {
       post.comments = post.comments.map(comment => {
@@ -68,10 +69,10 @@ const deepCleanUserData = (user) => {
         return comment;
       });
     }
-    
+
     return post;
   });
-  
+
   return user;
 };
 
@@ -83,19 +84,19 @@ const createNotificationSafe = async (recipient, sender, type, postId, commentId
       console.log('⏭️ Skipping self notification');
       return null;
     }
-    
+
     const recipientId = toObjectId(recipient);
     const senderId = toObjectId(sender);
-    
+
     // ✅ ULTRA-SAFE: Build query without commentId for like notifications
     const query = {
       recipient: recipientId,
       sender: senderId,
       type: type
     };
-    
+
     if (postId) query.post = toObjectId(postId);
-    
+
     // ✅ CRITICAL: Only add commentId for comment-related notifications
     if (commentId && (type === 'comment' || type === 'mention')) {
       query['reference.commentId'] = toObjectId(commentId);
@@ -103,7 +104,7 @@ const createNotificationSafe = async (recipient, sender, type, postId, commentId
       // For like notifications, explicitly set commentId to null to match index
       query['reference.commentId'] = null;
     }
-    
+
     // ✅ Use findOneAndUpdate with upsert to avoid duplicates
     const notification = await Notification.findOneAndUpdate(
       query,
@@ -128,9 +129,9 @@ const createNotificationSafe = async (recipient, sender, type, postId, commentId
         runValidators: true
       }
     );
-    
+
     console.log(`✅ Notification handled: ${notification._id}`);
-    
+
     // Emit real-time notification only for new ones
     if (global.io) {
       const populated = await Notification.findById(notification._id)
@@ -138,7 +139,7 @@ const createNotificationSafe = async (recipient, sender, type, postId, commentId
         .lean();
       global.io.to(recipient.toString()).emit('newNotification', populated);
     }
-    
+
     return notification;
   } catch (error) {
     // ✅ Handle duplicate key error gracefully
@@ -166,7 +167,7 @@ const createNotificationSafe = async (recipient, sender, type, postId, commentId
 // ✅ Basic Data Cleaner
 const cleanLikesArray = (likes) => {
   if (!Array.isArray(likes)) return [];
-  
+
   return likes
     .filter(like => mongoose.Types.ObjectId.isValid(like))
     .map(like => toObjectId(like))
@@ -181,26 +182,26 @@ const cleanLikesArray = (likes) => {
 exports.createPost = async (req, res) => {
   try {
     const { userId, description } = req.body;
-    
+
     if (!userId) {
-      return res.status(400).json({ 
-        success: false, 
-        message: "userId is required" 
+      return res.status(400).json({
+        success: false,
+        message: "userId is required"
       });
     }
-    
+
     if (!mongoose.Types.ObjectId.isValid(userId)) {
-      return res.status(400).json({ 
-        success: false, 
-        message: "Invalid userId" 
+      return res.status(400).json({
+        success: false,
+        message: "Invalid userId"
       });
     }
 
     let user = await Auth.findById(userId);
     if (!user) {
-      return res.status(404).json({ 
-        success: false, 
-        message: "User not found" 
+      return res.status(404).json({
+        success: false,
+        message: "User not found"
       });
     }
 
@@ -212,9 +213,9 @@ exports.createPost = async (req, res) => {
     if (req.files && req.files.length > 0) {
       for (const file of req.files) {
         const url = await uploadImage(file.buffer, "posts", file.originalname);
-        mediaFiles.push({ 
-          url, 
-          type: file.mimetype && file.mimetype.startsWith("video") ? "video" : "image" 
+        mediaFiles.push({
+          url,
+          type: file.mimetype && file.mimetype.startsWith("video") ? "video" : "image"
         });
       }
     }
@@ -225,10 +226,10 @@ exports.createPost = async (req, res) => {
     if (description && typeof description === "string") {
       let match;
       while ((match = mentionRegex.exec(description)) !== null) {
-        const mentionedUser = await Auth.findOne({ 
-          "profile.username": { $regex: new RegExp(`^${match[1]}$`, "i") } 
+        const mentionedUser = await Auth.findOne({
+          "profile.username": { $regex: new RegExp(`^${match[1]}$`, "i") }
         }).select("_id");
-        
+
         if (mentionedUser) {
           mentions.push(mentionedUser._id);
         }
@@ -249,11 +250,15 @@ exports.createPost = async (req, res) => {
 
     if (!user.posts) user.posts = [];
     user.posts.push(newPost);
-    
+
     user.markModified('posts');
     await user.save({ validateBeforeSave: true });
 
     const createdPost = user.posts[user.posts.length - 1];
+
+    // 🎁 POST COIN REWARD (SILENT – NO FRONTEND EFFECT)
+    rewardPostCoin(userId)
+      .catch(err => console.error("Post coin reward error:", err.message));
 
     // Create notifications for followers
     if (user.followers && user.followers.length > 0) {
@@ -281,18 +286,18 @@ exports.createPost = async (req, res) => {
       );
     }
 
-    res.status(201).json({ 
-      success: true, 
-      message: 'Post created successfully', 
+    res.status(201).json({
+      success: true,
+      message: 'Post created successfully',
       data: createdPost
     });
-    
+
   } catch (err) {
     console.error("❌ createPost error:", err);
-    res.status(500).json({ 
-      success: false, 
-      message: "Server error", 
-      error: err.message 
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: err.message
     });
   }
 };
@@ -485,25 +490,25 @@ exports.updatePostById = async (req, res) => {
 
 // Like/Unlike a post
 exports.toggleLikePost = async (req, res) => {
- try {
+  try {
     const { postId, userId, postOwnerId } = req.body;
-    
+
     console.log(`❤️ Toggle like:`, { postId, userId, postOwnerId });
-    
+
     // Validation
     if (!postId || !userId || !postOwnerId) {
-      return res.status(400).json({ 
-        success: false, 
-        message: "postId, userId, postOwnerId required" 
+      return res.status(400).json({
+        success: false,
+        message: "postId, userId, postOwnerId required"
       });
     }
-    
-    if (!mongoose.Types.ObjectId.isValid(postId) || 
-        !mongoose.Types.ObjectId.isValid(userId) || 
-        !mongoose.Types.ObjectId.isValid(postOwnerId)) {
-      return res.status(400).json({ 
-        success: false, 
-        message: "Invalid IDs" 
+
+    if (!mongoose.Types.ObjectId.isValid(postId) ||
+      !mongoose.Types.ObjectId.isValid(userId) ||
+      !mongoose.Types.ObjectId.isValid(postOwnerId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid IDs"
       });
     }
 
@@ -514,9 +519,9 @@ exports.toggleLikePost = async (req, res) => {
     // Find post owner
     let postOwner = await Auth.findById(postOwnerObjectId);
     if (!postOwner) {
-      return res.status(404).json({ 
-        success: false, 
-        message: "Post owner not found" 
+      return res.status(404).json({
+        success: false,
+        message: "Post owner not found"
       });
     }
 
@@ -526,9 +531,9 @@ exports.toggleLikePost = async (req, res) => {
     // Find the specific post
     const post = postOwner.posts.id(postObjectId);
     if (!post) {
-      return res.status(404).json({ 
-        success: false, 
-        message: "Post not found" 
+      return res.status(404).json({
+        success: false,
+        message: "Post not found"
       });
     }
 
@@ -553,7 +558,7 @@ exports.toggleLikePost = async (req, res) => {
         return toObjectId(like);
       });
 
-    const alreadyLiked = post.likes.some(likeId => 
+    const alreadyLiked = post.likes.some(likeId =>
       likeId.toString() === userObjectId.toString()
     );
 
@@ -562,10 +567,10 @@ exports.toggleLikePost = async (req, res) => {
 
     if (alreadyLiked) {
       // Unlike the post
-      post.likes = post.likes.filter(likeId => 
+      post.likes = post.likes.filter(likeId =>
         likeId.toString() !== userObjectId.toString()
       );
-      
+
       postOwner.markModified('posts');
       await postOwner.save();
 
@@ -584,16 +589,16 @@ exports.toggleLikePost = async (req, res) => {
         console.log(`ℹ️ No notification to delete or already deleted`);
       }
 
-      return res.status(200).json({ 
-        success: true, 
-        message: "Post unliked successfully", 
-        likesCount: post.likes.length, 
+      return res.status(200).json({
+        success: true,
+        message: "Post unliked successfully",
+        likesCount: post.likes.length,
         liked: false
       });
     } else {
       // Like the post - ONLY add ObjectId
       post.likes.push(userObjectId);
-      
+
       postOwner.markModified('posts');
       await postOwner.save();
 
@@ -603,7 +608,7 @@ exports.toggleLikePost = async (req, res) => {
       if (postOwnerObjectId.toString() !== userObjectId.toString()) {
         try {
           const user = await Auth.findById(userObjectId).select("fullName profile.username");
-          
+
           // ✅ CRITICAL FIX: Check if notification already exists before creating
           const existingNotification = await Notification.findOne({
             recipient: postOwnerObjectId,
@@ -631,29 +636,29 @@ exports.toggleLikePost = async (req, res) => {
         }
       }
 
-      return res.status(200).json({ 
-        success: true, 
-        message: "Post liked successfully", 
-        likesCount: post.likes.length, 
+      return res.status(200).json({
+        success: true,
+        message: "Post liked successfully",
+        likesCount: post.likes.length,
         liked: true
       });
     }
   } catch (err) {
     console.error("❌ toggleLikePost error:", err);
-    
+
     // ✅ Handle duplicate key error specifically
     if (err.code === 11000) {
-      return res.status(400).json({ 
-        success: false, 
+      return res.status(400).json({
+        success: false,
         message: "Duplicate action detected. Please try again.",
         error: "Duplicate notification"
       });
     }
-    
-    res.status(500).json({ 
-      success: false, 
-      message: "Server error", 
-      error: err.message 
+
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: err.message
     });
   }
 };
@@ -705,30 +710,30 @@ exports.getLikeById = async (req, res) => {
 
 // Add comment to a post with mentions
 exports.addComment = async (req, res) => {
-    try {
+  try {
     const { userId, postId, text } = req.body;
-    
+
     console.log(`💬 Comment action:`, { userId, postId, text });
-    
+
     if (!userId || !postId || !text) {
-      return res.status(400).json({ 
-        success: false, 
-        message: "userId, postId and text are required" 
+      return res.status(400).json({
+        success: false,
+        message: "userId, postId and text are required"
       });
     }
-    
+
     if (!mongoose.Types.ObjectId.isValid(userId) || !mongoose.Types.ObjectId.isValid(postId)) {
-      return res.status(400).json({ 
-        success: false, 
-        message: "Invalid IDs" 
+      return res.status(400).json({
+        success: false,
+        message: "Invalid IDs"
       });
     }
 
     let postOwner = await Auth.findOne({ "posts._id": postId });
     if (!postOwner) {
-      return res.status(404).json({ 
-        success: false, 
-        message: "Post not found" 
+      return res.status(404).json({
+        success: false,
+        message: "Post not found"
       });
     }
 
@@ -737,22 +742,22 @@ exports.addComment = async (req, res) => {
 
     const post = postOwner.posts.id(postId);
     if (!post) {
-      return res.status(404).json({ 
-        success: false, 
-        message: "Post not found" 
+      return res.status(404).json({
+        success: false,
+        message: "Post not found"
       });
     }
 
     const commenter = await Auth.findById(userId).select("fullName profile.username");
-    
+
     // Mention extraction
     const mentionRegex = /@([a-zA-Z0-9._-]+)/g;
     let mentions = [];
     let match;
     while ((match = mentionRegex.exec(text)) !== null) {
       const username = match[1];
-      const mentionedUser = await Auth.findOne({ 
-        "profile.username": { $regex: new RegExp(`^${username}$`, "i") } 
+      const mentionedUser = await Auth.findOne({
+        "profile.username": { $regex: new RegExp(`^${username}$`, "i") }
       }).select("_id fullName");
       if (mentionedUser) mentions.push(mentionedUser._id);
     }
@@ -790,7 +795,7 @@ exports.addComment = async (req, res) => {
     if (mentions.length > 0) {
       for (const mId of mentions) {
         if (mId.toString() === userId) continue;
-        
+
         await createNotificationSafe(
           mId.toString(),
           userId,
@@ -802,17 +807,17 @@ exports.addComment = async (req, res) => {
       }
     }
 
-    res.status(201).json({ 
-      success: true, 
-      message: "Comment added successfully ✅", 
+    res.status(201).json({
+      success: true,
+      message: "Comment added successfully ✅",
       data: savedComment
     });
   } catch (error) {
     console.error("❌ addComment error:", error);
-    res.status(500).json({ 
-      success: false, 
-      message: "Server error", 
-      error: error.message 
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: error.message
     });
   }
 };
@@ -876,12 +881,12 @@ exports.getCommentById = async (req, res) => {
 // ---------------- Delete a comment by ID ----------------
 // Delete a comment by ID (with userId from params)
 exports.deleteCommentById = async (req, res) => {
-   try {
+  try {
     const { postId, commentId, userId } = req.params;
 
     if (!mongoose.Types.ObjectId.isValid(postId) ||
-        !mongoose.Types.ObjectId.isValid(commentId) ||
-        !mongoose.Types.ObjectId.isValid(userId)) {
+      !mongoose.Types.ObjectId.isValid(commentId) ||
+      !mongoose.Types.ObjectId.isValid(userId)) {
       return res.status(400).json({ success: false, message: "Invalid IDs" });
     }
 

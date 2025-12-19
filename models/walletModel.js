@@ -12,6 +12,10 @@ const walletSchema = new mongoose.Schema({
     type: Number,
     default: 10
   },
+  dailyPostReward: {
+  count: { type: Number, default: 0 },
+  lastRewardDate: { type: Date, default: null }
+},
   history: [{
     type: {
       type: String, // spin, bonus, admin

@@ -99,11 +99,6 @@ const authSchema = new mongoose.Schema({
   fullName: { type: String, required: true },
   mobile: { type: String, unique: true, sparse: true },
   email: { type: String, unique: true, sparse: true },
-  wallet: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: "Wallet",
-    default: null
-  },
   gender: { type: String },
   otpVerified: { type: Boolean, default: false },
   accountStatus: {
@@ -158,6 +153,11 @@ const authSchema = new mongoose.Schema({
     ref: "Auth"
   }],
   posts: [postSchema],
+  wallet: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Wallet",
+    default: null
+  },
 }, {
   timestamps: true
 });

@@ -3,6 +3,8 @@ const bcrypt = require('bcrypt');
 const { generateToken, generateTempToken, verifyTempToken } = require('../utils/token');
 const { uploadImage, uploadToCloudinary, uploadImages, uploadToCloudinarys } = require('../config/cloudinary');
 const { Auth, Notification } = require('../models/authModel');
+const Wallet = require("../models/walletModel");
+
 
 let tempForgotToken = null;
 const toObjectId = (id) => {

@@ -3,20 +3,78 @@ const Spin = require("../models/spinModel");
 const Wallet = require("../models/walletModel");
 const { Auth } = require("../models/authModel");
 const mongoose = require("mongoose");
+const SpinWheel = require("../models/spinRewardModel");
+const SpinConfig = require("../models/spinConfigModel");
 
+/* ================= CREATE / UPDATE SLOT ================= */
+exports.upsertSpinSlot = async (req, res) => {
+  try {
+    const { position, label, coins, spinAgain, isActive } = req.body;
 
-const SPIN_REWARDS = [
-  { label: "1 Coin", coins: 1 },
-  { label: "2 Coins", coins: 2 },
-  { label: "3 Coins", coins: 3 },
-  { label: "Spin Again", coins: 0, spinAgain: true },
-  { label: "4 Coins", coins: 4 },
-  { label: "5 Coins", coins: 5 },
-  { label: "Better Luck Next Time", coins: 0 },
-  { label: "2 Coins", coins: 2 }
-];
+    if (position < 1 || position > 8) {
+      return res.status(400).json({
+        success: false,
+        message: "Position must be between 1 and 8"
+      });
+    }
 
-const MAX_DAILY_SPINS = 2;
+    const slot = await SpinWheel.findOneAndUpdate(
+      { position },
+      { label, coins, spinAgain, isActive },
+      { upsert: true, new: true }
+    );
+
+    res.status(200).json({
+      success: true,
+      message: "Spin slot saved",
+      data: slot
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/* ================= GET FULL WHEEL ================= */
+exports.getSpinWheel = async (req, res) => {
+  try {
+    const wheel = await SpinWheel.find({ isActive: true }).sort({ position: 1 });
+
+    if (wheel.length !== 8) {
+      return res.status(400).json({
+        success: false,
+        message: "Spin wheel must have exactly 8 active slots"
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      data: wheel
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/* ================= SET DAILY SPIN LIMIT ================= */
+exports.setSpinLimit = async (req, res) => {
+  try {
+    const { maxDailySpins } = req.body;
+
+    const config = await SpinConfig.findOneAndUpdate(
+      {},
+      { maxDailySpins },
+      { upsert: true, new: true }
+    );
+
+    res.status(200).json({
+      success: true,
+      data: config
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 exports.spinWheel = async (req, res) => {
   try {
     const { userId } = req.body;
@@ -34,22 +92,34 @@ exports.spinWheel = async (req, res) => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
+    /* ================= GET SPIN LIMIT ================= */
+    const config = await SpinConfig.findOne();
+    const MAX_DAILY_SPINS = config?.maxDailySpins || 2;
+
     const spinsToday = await Spin.countDocuments({
       userId,
       spinDate: today
     });
 
     if (spinsToday >= MAX_DAILY_SPINS) {
-      return res.status(400).json({
-        success: false,
+      return res.status(202).json({
+        success: true,
         message: "Today's spins are over. Come back tomorrow ⏰"
       });
     }
 
-    /* ================= PICK REWARD ================= */
-    const reward =
-      SPIN_REWARDS[Math.floor(Math.random() * SPIN_REWARDS.length)];
+    /* ================= GET SPIN WHEEL (8 SLOTS) ================= */
+    const wheel = await SpinWheel.find({ isActive: true }).sort({ position: 1 });
 
+    if (wheel.length !== 8) {
+      return res.status(400).json({
+        success: false,
+        message: "Spin wheel is not configured properly"
+      });
+    }
+
+    /* ================= PICK RANDOM SLOT ================= */
+    const reward = wheel[Math.floor(Math.random() * 8)];
     const coinsWon = reward.coins || 0;
 
     /* ================= SAVE SPIN ================= */
@@ -60,10 +130,9 @@ exports.spinWheel = async (req, res) => {
       spinDate: today
     });
 
-    /* ================= WALLET (ALWAYS SAFE) ================= */
+    /* ================= WALLET ================= */
     let wallet = await Wallet.findOne({ userId });
 
-    // 🔥 CREATE WALLET IF MISSING
     if (!wallet) {
       wallet = await Wallet.create({
         userId,
@@ -75,12 +144,10 @@ exports.spinWheel = async (req, res) => {
         }]
       });
 
-      // link wallet safely
       user.wallet = wallet._id;
       await user.save();
     }
 
-    // ➕ ADD COINS
     if (coinsWon > 0) {
       wallet.coins += coinsWon;
       wallet.history.push({
@@ -97,25 +164,49 @@ exports.spinWheel = async (req, res) => {
       message:
         reward.label === "Better Luck Next Time"
           ? "😔 Better luck next time"
-          : reward.label === "Spin Again"
+          : reward.spinAgain
           ? "🔄 Spin again"
           : `🎉 Congratulations! You got ${coinsWon} coins`,
       data: {
         reward: reward.label,
         coinsWon,
         spinsLeft: MAX_DAILY_SPINS - (spinsToday + 1),
-        walletCoins: wallet.coins   // ✅ ALWAYS SAFE
+        walletCoins: wallet.coins
       }
     });
 
   } catch (error) {
     console.error("Spin Error:", error);
-    return res.status(500).json({
+    res.status(500).json({
       success: false,
       message: error.message
     });
   }
 };
+
+
+// GET /api/spin
+exports.getAllSpins = async (req, res) => {
+  try {
+    const spins = await Spin.find()
+      .populate("userId", "fullName email phone")
+      .sort({ createdAt: -1 });
+
+    res.status(200).json({
+      success: true,
+      total: spins.length,
+      data: spins
+    });
+
+  } catch (error) {
+    console.error("Get All Spins Error:", error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+
 
 // GET /api/spin/:spinId
 exports.getSpinById = async (req, res) => {
@@ -380,4 +471,125 @@ const getMostCommon = (arr) => {
   return Object.keys(map).reduce((a, b) =>
     map[a] > map[b] ? a : b
   );
+};
+
+
+exports.transferCoinsToFriend = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { senderId, friendId, coins } = req.body;
+
+    // ---------------- VALIDATIONS ----------------
+    if (!senderId || !friendId || !coins) {
+      return res.status(400).json({
+        success: false,
+        message: "senderId, friendId and coins are required"
+      });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(senderId) || !mongoose.Types.ObjectId.isValid(friendId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid senderId or friendId"
+      });
+    }
+
+    if (senderId === friendId) {
+      return res.status(400).json({
+        success: false,
+        message: "Cannot send coins to yourself"
+      });
+    }
+
+    if (coins <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Coins must be greater than 0"
+      });
+    }
+
+    // ---------------- CHECK FRIENDSHIP ----------------
+    const sender = await Auth.findById(senderId).session(session);
+    if (!sender) {
+      return res.status(404).json({ success: false, message: "Sender not found" });
+    }
+
+    const isFriend =
+      sender.following?.includes(friendId) ||
+      sender.followers?.includes(friendId) ||
+      sender.approvedFollowers?.includes(friendId);
+
+    if (!isFriend) {
+      return res.status(403).json({
+        success: false,
+        message: "Coins can be sent only to friends"
+      });
+    }
+
+    // ---------------- FETCH WALLETS ----------------
+    const senderWallet = await Wallet.findOne({ userId: senderId }).session(session);
+    const friendWallet = await Wallet.findOne({ userId: friendId }).session(session);
+
+    if (!senderWallet || !friendWallet) {
+      return res.status(404).json({
+        success: false,
+        message: "Wallet not found"
+      });
+    }
+
+    if (senderWallet.coins < coins) {
+      return res.status(400).json({
+        success: false,
+        message: "Insufficient wallet balance"
+      });
+    }
+
+    // ---------------- TRANSFER COINS ----------------
+    senderWallet.coins -= coins;
+    friendWallet.coins += coins;
+
+    // Sender history
+    senderWallet.history.push({
+      type: "transfer_sent",
+      coins: -coins,
+      message: `Sent ${coins} coins to friend`,
+      createdAt: new Date()
+    });
+
+    // Receiver history
+    friendWallet.history.push({
+      type: "transfer_received",
+      coins: coins,
+      message: `Received ${coins} coins from friend`,
+      createdAt: new Date()
+    });
+
+    await senderWallet.save({ session });
+    await friendWallet.save({ session });
+
+    await session.commitTransaction();
+    session.endSession();
+
+    return res.status(200).json({
+      success: true,
+      message: "Coins transferred successfully ✅",
+      data: {
+        senderBalance: senderWallet.coins,
+        receiverBalance: friendWallet.coins
+      }
+    });
+
+  } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
+
+    console.error("❌ Coin transfer error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: error.message
+    });
+  }
 };
