@@ -56,11 +56,30 @@ exports.verifyCoinPayment = async (req, res) => {
   try {
     const { razorpayOrderId, razorpayPaymentId, razorpaySignature } = req.body;
 
-    const payment = await CoinPayment.findOne({ razorpayOrderId, isDeleted: false });
-    if (!payment) {
-      return res.status(404).json({ success: false, message: "Payment not found" });
+    if (!razorpayOrderId || !razorpayPaymentId || !razorpaySignature) {
+      return res.status(400).json({
+        success: false,
+        message: "Missing payment details"
+      });
     }
 
+    const payment = await CoinPayment.findOne({ razorpayOrderId });
+
+    if (!payment) {
+      return res.status(404).json({
+        success: false,
+        message: "Payment record not found for this orderId"
+      });
+    }
+
+    if (payment.status === "success") {
+      return res.status(400).json({
+        success: false,
+        message: "Payment already verified"
+      });
+    }
+
+    // 🔐 Verify Razorpay signature
     const body = razorpayOrderId + "|" + razorpayPaymentId;
     const expectedSignature = crypto
       .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
@@ -70,24 +89,39 @@ exports.verifyCoinPayment = async (req, res) => {
     if (expectedSignature !== razorpaySignature) {
       payment.status = "failed";
       await payment.save();
-      return res.status(400).json({ success: false, message: "Invalid payment signature" });
+
+      return res.status(400).json({
+        success: false,
+        message: "Invalid payment signature"
+      });
     }
 
+    // ✅ Payment success
     payment.status = "success";
     payment.razorpayPaymentId = razorpayPaymentId;
     payment.razorpaySignature = razorpaySignature;
     await payment.save();
 
+    // 💰 Wallet update
     const wallet = await Wallet.findOne({ userId: payment.userId });
+
+    if (!wallet) {
+      return res.status(404).json({
+        success: false,
+        message: "Wallet not found"
+      });
+    }
+
     wallet.coins += payment.coins;
     wallet.history.push({
       type: "purchase",
       coins: payment.coins,
       message: `Purchased ${payment.coins} coins`
     });
+
     await wallet.save();
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       message: "Coins added to wallet 🎉",
       data: {
@@ -97,9 +131,14 @@ exports.verifyCoinPayment = async (req, res) => {
     });
 
   } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    console.error("Verify Payment Error:", error);
+    return res.status(500).json({
+      success: false,
+      message: error.message
+    });
   }
 };
+
 
 /* ================= GET ALL PAYMENTS (ADMIN) ================= */
 exports.getAllCoinPayments = async (req, res) => {

@@ -6,7 +6,7 @@ const dotenv = require('dotenv');
 const authRoutes = require("./routes/authRoutes");
 const messageRoutes = require("./routes/messageRoutes");
 const coinRoutes =require("./routes/coinRoutes")
-
+const roomroute =require("./routes/roomRoutes")
 
 dotenv.config();
 
@@ -44,6 +44,7 @@ mongoose.connect(process.env.MONGO_URI)
 app.use("/api", authRoutes);
 app.use("/api", messageRoutes);
 app.use("/api",coinRoutes);
+app.use("api",roomroute);
 
 // Health check route
 app.get('/', (req, res) => {
@@ -223,6 +224,58 @@ io.on('connection', (socket) => {
       lastSeen.set(userId, new Date());
     }
   });
+
+
+  // ===============================
+// GROUP INVITE SOCKET EVENTS
+// ===============================
+
+// 📩 Send group invite (user ➜ friend)
+socket.on("sendGroupInvite", ({ userId, friendId, roomId, text, link }) => {
+  if (!userId || !friendId || !roomId) return;
+
+  console.log(`📨 Group invite from ${userId} ➜ ${friendId} for room ${roomId}`);
+
+  // Send invite to friend's personal room
+  io.to(friendId).emit("receiveGroupInvite", {
+    roomId,
+    invitedBy: userId,
+    text,
+    link,
+    timestamp: new Date()
+  });
+});
+
+// ✅ Accept group invite
+socket.on("acceptGroupInvite", ({ userId, roomId }) => {
+  if (!userId || !roomId) return;
+
+  console.log(`✅ User ${userId} accepted invite for room ${roomId}`);
+
+  // Join socket room
+  socket.join(roomId);
+
+  // Notify other room members
+  socket.to(roomId).emit("userJoinedGroup", {
+    userId,
+    roomId,
+    timestamp: new Date()
+  });
+});
+
+// ❌ Reject group invite
+socket.on("rejectGroupInvite", ({ userId, roomId }) => {
+  if (!userId || !roomId) return;
+
+  console.log(`❌ User ${userId} rejected invite for room ${roomId}`);
+
+  // Optional: notify inviter
+  socket.broadcast.emit("groupInviteRejected", {
+    userId,
+    roomId,
+    timestamp: new Date()
+  });
+});
 
   // -----------------------
   // Disconnect handling

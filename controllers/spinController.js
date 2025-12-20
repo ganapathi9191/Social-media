@@ -94,7 +94,7 @@ exports.spinWheel = async (req, res) => {
 
     /* ================= GET SPIN LIMIT ================= */
     const config = await SpinConfig.findOne();
-    const MAX_DAILY_SPINS = config?.maxDailySpins || 2;
+    const MAX_DAILY_SPINS = config?.maxDailySpins || 20;
 
     const spinsToday = await Spin.countDocuments({
       userId,

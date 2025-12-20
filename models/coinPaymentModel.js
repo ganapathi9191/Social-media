@@ -20,7 +20,12 @@ const coinPaymentSchema = new mongoose.Schema({
     type: String,
     enum: ["created", "success", "failed"],
     default: "created"
-  }
+  },
+  isDeleted: {
+  type: Boolean,
+  default: false
+}
+
 }, { timestamps: true });
 
 module.exports = mongoose.model("CoinPayment", coinPaymentSchema);
