@@ -327,3 +327,136 @@ exports.rejectGroupInvite = async (req, res) => {
     });
   }
 };
+
+
+/* ================= GET ALL INVITES FOR A USER ================= */
+exports.getUserInvites = async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    const invites = await GroupInvite.find({ invitedUser: userId })
+      .populate("invitedBy", "fullName profile")
+      .sort({ createdAt: -1 });
+
+    res.status(200).json({
+      success: true,
+      total: invites.length,
+      data: invites
+    });
+
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+
+/* ================= GET PENDING INVITES FOR USER ================= */
+exports.getPendingInvites = async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    const invites = await GroupInvite.find({
+      invitedUser: userId,
+      status: "pending"
+    }).populate("invitedBy", "fullName profile");
+
+    res.status(200).json({
+      success: true,
+      total: invites.length,
+      data: invites
+    });
+
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+
+/* ================= GET SENT INVITES (BY USER) ================= */
+exports.getSentInvites = async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    const invites = await GroupInvite.find({ invitedBy: userId })
+      .populate("invitedUser", "fullName profile")
+      .sort({ createdAt: -1 });
+
+    res.status(200).json({
+      success: true,
+      total: invites.length,
+      data: invites
+    });
+
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+
+/* ================= GET INVITE BY ID ================= */
+exports.getInviteById = async (req, res) => {
+  try {
+    const { inviteId } = req.params;
+
+    const invite = await GroupInvite.findById(inviteId)
+      .populate("invitedBy", "fullName profile")
+      .populate("invitedUser", "fullName profile");
+
+    if (!invite) {
+      return res.status(404).json({
+        success: false,
+        message: "Invite not found"
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      data: invite
+    });
+
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+
+/* ================= GET INVITES FOR A ROOM ================= */
+exports.getRoomInvites = async (req, res) => {
+  try {
+    const { roomId } = req.params;
+
+    const invites = await GroupInvite.find({ roomId })
+      .populate("invitedUser", "fullName profile")
+      .populate("invitedBy", "fullName profile");
+
+    res.status(200).json({
+      success: true,
+      total: invites.length,
+      data: invites
+    });
+
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+
+/* ================= GET PENDING INVITE COUNT ================= */
+exports.getPendingInviteCount = async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    const count = await GroupInvite.countDocuments({
+      invitedUser: userId,
+      status: "pending"
+    });
+
+    res.status(200).json({
+      success: true,
+      pendingInvites: count
+    });
+
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};

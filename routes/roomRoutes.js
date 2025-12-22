@@ -15,4 +15,12 @@ router.post("/invite", roomController.inviteToGroup);
 router.post("/accept", roomController.acceptGroupInvite);
 router.post("/reject", roomController.rejectGroupInvite);
 
+// GET routes
+router.get("/invites/user/:userId", roomController.getUserInvites);
+router.get("/invites/user/:userId/pending", roomController.getPendingInvites);
+router.get("/invites/sent/:userId", roomController.getSentInvites);
+router.get("/invites/:inviteId", roomController.getInviteById);
+router.get("/invites/room/:roomId", roomController.getRoomInvites);
+router.get("/invites/user/:userId/count", roomController.getPendingInviteCount);
+
 module.exports = router;
