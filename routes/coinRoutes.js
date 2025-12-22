@@ -6,7 +6,11 @@ const {
   getAllCoinPackages,
   getCoinPackageById,
   updateCoinPackage,
-  deleteCoinPackage
+  deleteCoinPackage,
+   upsertDownloadConfig,
+  getDownloadConfigs,
+  getDownloadConfigByType,
+  toggleDownloadConfig
 } = require("../controllers/adminController");
 
 const {
@@ -22,7 +26,11 @@ router.get("/admin/package/:packageId", getCoinPackageById);
 router.put("/admin/package/:packageId", updateCoinPackage);
 router.delete("/admin/package/:packageId", deleteCoinPackage);
 
-
+// 🔐 Admin-only routes
+router.post("/download-config", upsertDownloadConfig);
+router.get("/download-config", getDownloadConfigs);
+router.get("/download-config/:mediaType", getDownloadConfigByType);
+router.patch("/download-config/:mediaType/toggle", toggleDownloadConfig);
 
 router.post("/create-order", createCoinOrder);
 router.post("/verify-payment", verifyCoinPayment);

@@ -7,7 +7,7 @@ const notification =require("../controllers/notificationControllers");
 const followController =require("../controllers/followController");
 const postController =require('../controllers/postController');
 const spinCtrl = require("../controllers/spinController");
-
+const { downloadPost } = require("../controllers/postDownloadController");
 
 
 
@@ -319,6 +319,7 @@ router.get("/wallet/:userId/history", spinCtrl.getWalletHistory);
 router.post("/transfer-coins", spinCtrl.transferCoinsToFriend);
 
  
-
+//download the post sections
+router.post("/post-download", downloadPost);
 
 module.exports = router;

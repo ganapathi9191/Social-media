@@ -44,7 +44,7 @@ mongoose.connect(process.env.MONGO_URI)
 app.use("/api", authRoutes);
 app.use("/api", messageRoutes);
 app.use("/api",coinRoutes);
-app.use("api",roomroute);
+app.use("/api",roomroute);
 
 // Health check route
 app.get('/', (req, res) => {

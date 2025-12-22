@@ -77,9 +77,27 @@ exports.setSpinLimit = async (req, res) => {
 
 exports.spinWheel = async (req, res) => {
   try {
-    const { userId } = req.body;
+    const { userId, spinSlotId } = req.body;
 
-    /* ================= VALIDATE USER ================= */
+    /* ================= VALIDATION ================= */
+    if (!userId || !spinSlotId) {
+      return res.status(400).json({
+        success: false,
+        message: "userId and spinSlotId are required"
+      });
+    }
+
+    if (
+      !mongoose.Types.ObjectId.isValid(userId) ||
+      !mongoose.Types.ObjectId.isValid(spinSlotId)
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid userId or spinSlotId"
+      });
+    }
+
+    /* ================= USER ================= */
     const user = await Auth.findById(userId);
     if (!user) {
       return res.status(404).json({
@@ -92,7 +110,7 @@ exports.spinWheel = async (req, res) => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    /* ================= GET SPIN LIMIT ================= */
+    /* ================= DAILY SPIN LIMIT ================= */
     const config = await SpinConfig.findOne();
     const MAX_DAILY_SPINS = config?.maxDailySpins || 20;
 
@@ -108,24 +126,25 @@ exports.spinWheel = async (req, res) => {
       });
     }
 
-    /* ================= GET SPIN WHEEL (8 SLOTS) ================= */
-    const wheel = await SpinWheel.find({ isActive: true }).sort({ position: 1 });
+    /* ================= GET SLOT BY ID ================= */
+    const rewardSlot = await SpinWheel.findOne({
+      _id: spinSlotId,
+      isActive: true
+    });
 
-    if (wheel.length !== 8) {
+    if (!rewardSlot) {
       return res.status(400).json({
         success: false,
-        message: "Spin wheel is not configured properly"
+        message: "Invalid or inactive spin slot"
       });
     }
 
-    /* ================= PICK RANDOM SLOT ================= */
-    const reward = wheel[Math.floor(Math.random() * 8)];
-    const coinsWon = reward.coins || 0;
+    const coinsWon = rewardSlot.coins || 0;
 
     /* ================= SAVE SPIN ================= */
     await Spin.create({
       userId,
-      reward: reward.label,
+      reward: rewardSlot.label,
       coins: coinsWon,
       spinDate: today
     });
@@ -162,27 +181,31 @@ exports.spinWheel = async (req, res) => {
     return res.status(200).json({
       success: true,
       message:
-        reward.label === "Better Luck Next Time"
-          ? "😔 Better luck next time"
-          : reward.spinAgain
+        rewardSlot.spinAgain
           ? "🔄 Spin again"
+          : coinsWon === 0
+          ? "😔 Better luck next time"
           : `🎉 Congratulations! You got ${coinsWon} coins`,
       data: {
-        reward: reward.label,
+        spinSlotId: rewardSlot._id,
+        reward: rewardSlot.label,
         coinsWon,
+        spinsUsed: spinsToday + 1,
         spinsLeft: MAX_DAILY_SPINS - (spinsToday + 1),
         walletCoins: wallet.coins
       }
     });
 
   } catch (error) {
-    console.error("Spin Error:", error);
-    res.status(500).json({
+    console.error("❌ Spin Error:", error);
+    return res.status(500).json({
       success: false,
       message: error.message
     });
   }
 };
+
+
 
 
 // GET /api/spin
