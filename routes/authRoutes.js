@@ -321,11 +321,11 @@ router.post("/transfer-coins", spinCtrl.transferCoinsToFriend);
  
 //download the post sections
 router.post("/post-download", ctrl.downloadPost);
-// router.get("/post-downloads", ctrl.getAllDownloads);            
-// router.get("/post-downloads/user/:userId", ctrl.getDownloadsByUser);
-// router.get("/post-downloads/post/:postId",ctrl.getDownloadsByPost);
+router.get("/post-downloads", ctrl.getAllDownloads);            
+router.get("/post-downloads/user/:userId", ctrl.getDownloadsByUser);
+router.get("/post-downloads/post/:postId",ctrl.getDownloadsByPost);
 
-// router.put("/post-download/:downloadId", ctrl.updateDownload); 
-// router.delete("/post-download/:downloadId",ctrl.deleteDownload); 
+router.put("/post-download/:downloadId", ctrl.updateDownload); 
+router.delete("/post-download/:downloadId",ctrl.deleteDownload); 
 
 module.exports = router;
