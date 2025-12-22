@@ -7,7 +7,7 @@ const notification =require("../controllers/notificationControllers");
 const followController =require("../controllers/followController");
 const postController =require('../controllers/postController');
 const spinCtrl = require("../controllers/spinController");
-const { downloadPost } = require("../controllers/postDownloadController");
+const ctrl = require("../controllers/postDownloadController");
 
 
 
@@ -320,6 +320,12 @@ router.post("/transfer-coins", spinCtrl.transferCoinsToFriend);
 
  
 //download the post sections
-router.post("/post-download", downloadPost);
+router.post("/post-download", ctrl.downloadPost);
+// router.get("/post-downloads", ctrl.getAllDownloads);            
+// router.get("/post-downloads/user/:userId", ctrl.getDownloadsByUser);
+// router.get("/post-downloads/post/:postId",ctrl.getDownloadsByPost);
+
+// router.put("/post-download/:downloadId", ctrl.updateDownload); 
+// router.delete("/post-download/:downloadId",ctrl.deleteDownload); 
 
 module.exports = router;

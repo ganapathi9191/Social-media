@@ -1,6 +1,17 @@
 const mongoose = require("mongoose");
 const Room = require("../models/roomModel");
+const GroupInvite = require("../models/groupInviteModel"); // ✅ MISSING IMPORT FIX
 const Auth = require("../models/authModel").Auth;
+
+/* ================= ROOM ID GENERATOR ================= */
+const generateRoomId = () => {
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  let roomId = "";
+  for (let i = 0; i < 6; i++) {
+    roomId += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return roomId; // Example: A9K2PZ
+};
 
 /* ================= CREATE ROOM ================= */
 exports.createRoomByUserId = async (req, res) => {
@@ -24,7 +35,7 @@ exports.createRoomByUserId = async (req, res) => {
       });
     }
 
-    // Generate unique roomId
+    /* ---------- UNIQUE ROOM ID ---------- */
     let roomId;
     let exists = true;
     while (exists) {
@@ -32,7 +43,7 @@ exports.createRoomByUserId = async (req, res) => {
       exists = await Room.findOne({ roomId });
     }
 
-    // Create room & auto-join creator
+    /* ---------- CREATE ROOM ---------- */
     const room = await Room.create({
       roomId,
       createdBy: userId,
@@ -174,7 +185,7 @@ exports.inviteToGroup = async (req, res) => {
       });
     }
 
-    // prevent duplicate invite
+    /* ---------- PREVENT DUPLICATE INVITE ---------- */
     const alreadyInvited = await GroupInvite.findOne({
       roomId,
       invitedUser: friendId,
@@ -196,10 +207,10 @@ exports.inviteToGroup = async (req, res) => {
       inviteLink: link
     });
 
-    // 🔔 REAL-TIME SOCKET EMIT
+    /* ---------- SOCKET EVENT ---------- */
     const io = global.io;
     if (io) {
-      io.to(friendId).emit("groupInvite", {
+      io.to(friendId.toString()).emit("groupInvite", {
         inviteId: invite._id,
         roomId,
         text,
@@ -257,10 +268,9 @@ exports.acceptGroupInvite = async (req, res) => {
     invite.status = "accepted";
     await invite.save();
 
-    // 🔌 Socket join room automatically
     const io = global.io;
     if (io) {
-      io.to(userId).emit("joinRoom", invite.roomId);
+      io.to(userId.toString()).emit("joinRoom", invite.roomId);
     }
 
     res.status(200).json({
@@ -281,6 +291,7 @@ exports.acceptGroupInvite = async (req, res) => {
 };
 
 
+/* ================= REJECT INVITE ================= */
 exports.rejectGroupInvite = async (req, res) => {
   try {
     const { inviteId, userId } = req.body;
