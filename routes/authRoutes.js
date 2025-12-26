@@ -271,29 +271,165 @@ router.get('/check-username/:username', authController.checkUsernameAvailability
 router.get('/dashboard/:userId', authController.getUserDashboard);
 
 
-// Create Campaign (with multiple images)
-router.post("/campaign",upload.array("media"),campaign.createCampaign);
+// Create Campaign (User) - Pass userId in body
+router.post(
+  "/campaigns",
+  upload.array("media"),
+  campaign.createCampaign
+);
 
-// Get all campaigns
-router.get("/campaigns", campaign.getCampaigns);
+// Get User's Own Campaigns - Pass userId as param
+router.get(
+  "/campaigns/user/:userId",
+  campaign.getUserCampaigns
+);
 
-// Get campaign by ID
-router.get("/campaign/:id", campaign.getCampaignById);
+// Get Single Campaign by ID (Public)
+router.get(
+  "/campaigns/:id",
+  campaign.getCampaignById
+);
 
-// Update campaign by ID (with new images if uploaded)
-router.put("/campaign/:id",upload.array("media"),campaign.updateCampaign);
+// Update Campaign - Pass userId in body
+router.put(
+  "/campaigns/:id",
+  upload.array("media"),
+  campaign.updateCampaign
+);
 
-// Delete campaign by ID
-router.delete("/campaign/:id", campaign.deleteCampaign);
+// Delete Campaign - Pass userId in body
+router.delete(
+  "/campaigns/:id",
+  campaign.deleteCampaign
+);
 
+// Get Campaign Analytics - Pass userId as query param
+router.get(
+  "/campaigns/:id/analytics",
+  campaign.getCampaignAnalytics
+);
 
-router.post("/submit", campaign.submitForm);
-router.get("/all-forms", campaign.getAllFormFills);           // Get all forms
-router.get("/form/:id", campaign.getFormFillById);       // Get form by ID
-router.put("/form/:id", campaign.updateFormFillById);    // Update form by ID
-router.delete("/form/:id", campaign.deleteFormFillById); // Delete form by ID
+// ========================================
+// ADMIN CAMPAIGN MANAGEMENT ROUTES
+// ========================================
 
+// Get All Campaigns - Pass isAdmin=true in query
+router.get(
+  "/admin/campaigns",
+  campaign.getAllCampaigns
+);
 
+// Admin: Approve/Reject Campaign - Pass isAdmin=true in body
+router.put(
+  "/admin/campaigns/:id/review",
+  campaign.adminReviewCampaign
+);
+
+// Admin: Push Campaign - Pass isAdmin=true in body
+router.put(
+  "/admin/campaigns/:id/push",
+  campaign.adminPushCampaign
+);
+
+// Admin: Stop Campaign - Pass isAdmin=true in body
+router.put(
+  "/admin/campaigns/:id/stop",
+  campaign.adminStopCampaign
+);
+
+// ========================================
+// CAMPAIGN PACKAGE ROUTES
+// ========================================
+
+// Get All Packages (Public)
+router.get(
+  "/campaign-packages",
+  campaign.getCampaignPackages
+);
+
+// Get Single Package (Public)
+router.get(
+  "/campaign-packages/:id",
+  campaign.getCampaignPackageById
+);
+
+// Create Package - Pass isAdmin=true in body
+router.post(
+  "/campaign-packages",
+  campaign.createCampaignPackage
+);
+
+// Update Package - Pass isAdmin=true in body
+router.put(
+  "/campaign-packages/:id",
+  campaign.updateCampaignPackage
+);
+
+// Delete Package - Pass isAdmin=true in body
+router.delete(
+  "/campaign-packages/:id",
+  campaign.deleteCampaignPackage
+);
+
+// ========================================
+// PAYMENT ROUTES
+// ========================================
+
+// Create Payment Order - Pass userId in body
+router.post(
+  "/campaigns/payment/create-order",
+  campaign.createPaymentOrder
+);
+
+// Verify Payment - Pass userId in body
+router.post(
+  "/campaigns/payment/verify",
+  campaign.verifyPayment
+);
+
+// ========================================
+// FAQ INTERACTION ROUTES (PUBLIC)
+// ========================================
+
+// Get Campaign FAQs (Public)
+router.get(
+  "/campaigns/:id/faqs",
+  campaign.getCampaignFAQs
+);
+
+// Validate Single FAQ Answer (Public - live validation)
+router.post(
+  "/campaigns/faqs/validate",
+  campaign.validateFAQAnswer
+);
+
+// Submit Complete FAQ Response (Public - pass userEmail in body)
+router.post(
+  "/campaigns/faqs/submit",
+  campaign.submitFAQResponse
+);
+
+// Get FAQ Responses for Campaign - Pass userId or isAdmin in query
+router.get(
+  "/campaigns/:campaignId/faq-responses",
+  campaign.getCampaignFAQResponses
+);
+
+// ========================================
+// CAMPAIGN FEED & STATS
+// ========================================
+
+// Get Active Campaigns for Feed (Public)
+router.get(
+  "/campaigns/feed/active",
+  campaign.getActiveCampaignsForFeed
+);
+
+// Update Campaign Stats (Public)
+router.post(
+  "/campaigns/stats/update",
+  campaign.updateCampaignStats
+);
 
 // 8 Slots
 router.post("/slot", spinCtrl.upsertSpinSlot);

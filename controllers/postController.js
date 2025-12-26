@@ -324,6 +324,7 @@ exports.getAllPosts = async (req, res) => {
 };
 
 // Get all posts for a specific user
+// Get all posts for a specific user with integrated ads
 exports.getUserPosts = async (req, res) => {
   try {
     // ✅ Get all users who have posts
@@ -339,13 +340,20 @@ exports.getUserPosts = async (req, res) => {
     // ✅ Sort posts by creation date (newest first)
     allPosts.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 
-    // ✅ Fetch active campaigns (ads)
-    const activeCampaigns = await Campaign.find({ isActive: true });
+    // ✅ Fetch ACTIVE campaigns with valid packages
+    const now = new Date();
+    const activeCampaigns = await Campaign.find({
+      isActive: true,
+      "purchasedPackage.paymentStatus": "completed",
+      "purchasedPackage.expiresAt": { $gt: now }
+    })
+    .select("fullName link media purchasedPackage stats")
+    .lean();
 
-    // ✅ Mix ads after every 10 posts
+    // ✅ Mix ads based on each campaign's postsInterval setting
     let mixedFeed = [];
-    let adIndex = 0;
-    const adInterval = 10; // show ad after every 10 posts
+    let campaignIndex = 0;
+    let postCounter = 0;
 
     for (let i = 0; i < allPosts.length; i++) {
       mixedFeed.push({
@@ -353,22 +361,32 @@ exports.getUserPosts = async (req, res) => {
         data: allPosts[i]
       });
 
-      if ((i + 1) % adInterval === 0 && adIndex < activeCampaigns.length) {
-        mixedFeed.push({
-          type: "advertisement",
-          data: activeCampaigns[adIndex]
-        });
-        adIndex++;
-      }
-    }
+      postCounter++;
 
-    // ✅ If posts end but ads remain, append one more ad
-    while (adIndex < activeCampaigns.length && mixedFeed.length < allPosts.length + activeCampaigns.length) {
-      mixedFeed.push({
-        type: "advertisement",
-        data: activeCampaigns[adIndex]
-      });
-      adIndex++;
+      // Check if we need to insert an ad
+      if (activeCampaigns.length > 0) {
+        const currentCampaign = activeCampaigns[campaignIndex % activeCampaigns.length];
+        const postsInterval = currentCampaign.purchasedPackage?.postsInterval || 10;
+        
+        if (postCounter >= postsInterval) {
+          mixedFeed.push({
+            type: "advertisement",
+            data: {
+              ...currentCampaign,
+              contentType: "campaign",
+              adIndex: Math.floor(i / postsInterval)
+            }
+          });
+          
+          // Update campaign impressions
+          await Campaign.findByIdAndUpdate(currentCampaign._id, {
+            $inc: { "stats.impressions": 1 }
+          });
+          
+          postCounter = 0; // Reset counter for next interval
+          campaignIndex++; // Move to next campaign for next insertion
+        }
+      }
     }
 
     res.status(200).json({
